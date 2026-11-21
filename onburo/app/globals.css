@@ -55,3 +55,7 @@ label{display:block;font-size:13px;color:var(--mute);margin-bottom:3px}
 .inline input[type=number]{width:80px}
 .sep{height:1px;background:var(--line);margin:14px 0}
 @media (max-width:600px){.task{flex-wrap:wrap}.acts{width:100%}}
+.task.cancelled{opacity:.6;border-left-color:#9aa3b5!important}
+.task.cancelled .t{text-decoration:line-through}
+.note{border-bottom:1px solid var(--line);padding:8px 0}
+.note:last-child{border-bottom:0}
