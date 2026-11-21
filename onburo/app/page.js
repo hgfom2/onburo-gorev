@@ -10,7 +10,6 @@ const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
 const REPEATS = { none: 'Tek seferlik', daily: 'Her gün', weekly: 'Haftanın belirli günleri', monthly_first: 'Her ayın ilk günü', monthly_last: 'Her ayın son günü' };
 const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir İlişkileri': '#e0a800' };
 const catColor = (catList, id) => CAT_COLORS[catList.find(c => c.id === id)?.name] || '#6b7280';
-const catColor = (catList, id) => { const i = catList.findIndex(c => c.id === id); return i < 0 ? '#6b7280' : PALETTE[i % PALETTE.length]; }; 
 const repeatText = t => t.recurrence === 'weekly' ? (t.weekdays || []).map(d => DAYS[d - 1]).join(', ') : REPEATS[t.recurrence];
 const byDue = (a, b) => (a.status === 'done') - (b.status === 'done') || new Date(a.due_at || 0) - new Date(b.due_at || 0);
 
@@ -180,9 +179,11 @@ export default function App() {
       {editing && (
         <div className="modal" onClick={() => setEditing(null)}>
           <div className="mbox" onClick={e => e.stopPropagation()}>
-            <h2>{editing.kind === 'tpl' ? 'Tekrarlayan görevi düzenle' : 'Görevi düzenle'}</h2>
-            <TaskForm key={editing.data.id} mode={editing.kind === 'tpl' ? 'tpl-edit' : 'task-edit'} initial={editing.data} c={c}
-              onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />
+            <h2>{editing.kind === 'tpl' ? 'Tekrarlayan görevi düzenle' : editing.kind === 'preset' ? (editing.data.id ? 'Şablonu düzenle' : 'Yeni görev şablonu') : 'Görevi düzenle'}</h2>
+            {editing.kind === 'preset'
+              ? <PresetForm key={editing.data.id || 'new'} initial={editing.data} c={c} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />
+              : <TaskForm key={editing.data.id} mode={editing.kind === 'tpl' ? 'tpl-edit' : 'task-edit'} initial={editing.data} c={c}
+                  onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />}
           </div>
         </div>
       )}
@@ -272,13 +273,34 @@ function Report({ c }) {
 }
 
 function Manage({ c }) {
-  const [tpls, setTpls] = useState([]); const [key, setKey] = useState(0);
+  const [tpls, setTpls] = useState([]); const [presets, setPresets] = useState([]); const [use, setUse] = useState(null); const [key, setKey] = useState(0);
   const load = useCallback(async () => { const { data } = await supabase.from('templates').select('*').eq('active', true).order('title'); setTpls(data || []); }, []);
-  useEffect(() => { load(); }, [load, c.ver]);
+  const loadP = useCallback(async () => { const { data } = await supabase.from('task_presets').select('*').order('name'); setPresets(data || []); }, []);
+  useEffect(() => { load(); loadP(); }, [load, loadP, c.ver]);
   const stop = async id => { await supabase.from('templates').update({ active: false }).eq('id', id); load(); };
+  const delPreset = async p => { if (confirm(`"${p.name}" şablonu silinsin mi?`)) { await supabase.from('task_presets').delete().eq('id', p.id); if (use && use.id === p.id) setUse(null); loadP(); } };
+  const initial = use ? { title: use.title, description: use.description, category_id: use.category_id, shift: use.shift || 'A', assignee: use.assignee,
+    dmode: use.due_n ? 'rel' : 'exact', rel_n: use.due_n || 2, rel_unit: use.due_unit || 'saat' } : undefined;
   return (<>
     <h2>Görev ekle</h2>
-    <TaskForm key={key} mode="new" c={c} onSaved={() => { setKey(k => k + 1); c.bump(); }} />
+    <div className="bar"><label style={{ margin: 0 }}>Şablondan başla:</label>
+      <select value={use ? use.id : ''} onChange={e => setUse(presets.find(p => p.id === e.target.value) || null)}>
+        <option value="">Boş görev</option>{presets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select></div>
+    <TaskForm key={`${key}-${use ? use.id : 'x'}`} mode="new" initial={initial} c={c} onPreset={loadP} onSaved={() => { setKey(k => k + 1); setUse(null); c.bump(); }} />
+    <h3>Görev şablonları ({presets.length}) <button className="btn ghost sm" style={{ marginLeft: 8 }} onClick={() => c.edit({ kind: 'preset', data: {} })}>+ Yeni şablon</button></h3>
+    <p className="meta">Sık verdiğiniz görevleri şablon olarak kaydedin. Yukarıdan seçince form dolar; siz sadece sorumlu ve deadline'ı ayarlarsınız.</p>
+    {!presets.length && <div className="empty">Henüz şablon yok.</div>}
+    {presets.map(p => (
+      <div className="task" key={p.id} style={{ borderLeftColor: catColor(c.catList, p.category_id) }}>
+        <div style={{ flex: 1 }}><div className="t">{p.name}</div>
+          <div className="meta">{p.title}{p.shift ? ` · ${SHIFT_NAME(p.shift)}` : ''}{p.due_n ? ` · Süre: ${p.due_n} ${p.due_unit}` : ''}{p.assignee ? ` · ${c.names[p.assignee] || ''}` : ''}</div></div>
+        <div className="acts">
+          <button className="btn sm" onClick={() => { setUse(p); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Kullan</button>
+          <button className="btn ghost sm" onClick={() => c.edit({ kind: 'preset', data: p })}>Düzenle</button>
+          <button className="btn danger sm" onClick={() => delPreset(p)}>Sil</button>
+        </div>
+      </div>))}
     <h3>Aktif tekrarlayan görevler ({tpls.length})</h3>
     {!tpls.length && <div className="empty">Tekrarlayan görev yok.</div>}
     {tpls.map(t => (
@@ -294,12 +316,12 @@ function Manage({ c }) {
 }
 
 /* ---------- Görev formu (yeni / düzenle / şablon düzenle) ---------- */
-function TaskForm({ mode, initial, c, onSaved, onCancel }) {
+function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
   const isTpl = mode === 'tpl-edit'; const isNew = mode === 'new'; const i = initial || {};
   const [f, setF] = useState({
     title: i.title || '', description: i.description || '', category_id: i.category_id ?? (c.catList[0]?.id || ''),
     shift: i.shift || 'A', assignee: i.assignee || '',
-    dmode: 'exact', due_local: i.due_at ? toLocalInput(i.due_at) : `${todayStr()}T18:00`, rel_n: 2, rel_unit: 'saat',
+    dmode: i.dmode || 'exact', due_local: i.due_at ? toLocalInput(i.due_at) : `${todayStr()}T18:00`, rel_n: i.rel_n || 2, rel_unit: i.rel_unit || 'saat',
     repeat: isTpl ? i.recurrence : 'none', weekdays: i.weekdays || [1, 2, 3, 4, 5, 6, 7], due_time: (i.due_time || '').slice(0, 5)
   });
   const [msg, setMsg] = useState('');
@@ -326,6 +348,14 @@ function TaskForm({ mode, initial, c, onSaved, onCancel }) {
       ({ error } = isNew ? await supabase.from('tasks').insert(row) : await supabase.from('tasks').update(row).eq('id', i.id));
     }
     if (error) setMsg('Kaydedilemedi: ' + error.message); else onSaved();
+  };
+  const savePreset = async () => {
+    if (!f.title.trim()) { setMsg('Önce görev başlığını yazın.'); return; }
+    const name = window.prompt('Şablon adı:', f.title.trim()); if (!name) return;
+    const rel = f.dmode === 'rel' && Number(f.rel_n) > 0;
+    const { error } = await supabase.from('task_presets').insert({ name: name.trim(), title: f.title.trim(), description: f.description || null,
+      category_id: f.category_id || null, shift: f.shift, assignee: f.assignee || null, due_n: rel ? Number(f.rel_n) : null, due_unit: rel ? f.rel_unit : null });
+    if (error) setMsg('Şablon kaydedilemedi: ' + error.message); else { setMsg('Şablon kaydedildi.'); if (onPreset) onPreset(); }
   };
   const del = async () => { if (confirm('Bu görev silinsin mi?')) { await supabase.from('tasks').delete().eq('id', i.id); onSaved(); } };
 
@@ -354,12 +384,44 @@ function TaskForm({ mode, initial, c, onSaved, onCancel }) {
           : <div className="inline"><input type="number" min="1" value={f.rel_n} onChange={e => set('rel_n', e.target.value)} />
               <select value={f.rel_unit} onChange={e => set('rel_unit', e.target.value)}><option value="saat">saat</option><option value="gün">gün</option></select><span className="meta">sonra</span></div>}
       </>)}
-      {msg && <div className="err">{msg}</div>}
+      {msg && <div className={msg.endsWith('kaydedildi.') ? 'meta' : 'err'}>{msg}</div>}
       <div className="inline" style={{ marginTop: 14 }}>
         <button className="btn">Kaydet</button>
         {onCancel && <button type="button" className="btn ghost" onClick={onCancel}>İptal</button>}
+        {isNew && !recurring && <button type="button" className="btn ghost" onClick={savePreset}>Şablon olarak kaydet</button>}
         {mode === 'task-edit' && <button type="button" className="btn danger" style={{ marginLeft: 'auto' }} onClick={del}>Görevi sil</button>}
       </div>
+    </form>
+  );
+}
+
+/* ---------- Görev şablonu formu ---------- */
+function PresetForm({ initial, c, onSaved, onCancel }) {
+  const i = initial || {};
+  const [f, setF] = useState({ name: i.name || '', title: i.title || '', description: i.description || '', category_id: i.category_id ?? (c.catList[0]?.id || ''),
+    shift: i.shift || 'A', assignee: i.assignee || '', due_n: i.due_n || '', due_unit: i.due_unit || 'saat' });
+  const [msg, setMsg] = useState(''); const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const save = async e => {
+    e.preventDefault(); setMsg('');
+    const row = { name: f.name.trim(), title: f.title.trim(), description: f.description || null, category_id: f.category_id || null, shift: f.shift,
+      assignee: f.assignee || null, due_n: f.due_n ? Number(f.due_n) : null, due_unit: f.due_n ? f.due_unit : null };
+    const { error } = i.id ? await supabase.from('task_presets').update(row).eq('id', i.id) : await supabase.from('task_presets').insert(row);
+    if (error) setMsg('Kaydedilemedi: ' + error.message); else onSaved();
+  };
+  return (
+    <form className="card" onSubmit={save}>
+      <div style={{ marginBottom: 12 }}><label>Şablon adı (listede görünür)</label><input style={{ width: '100%' }} value={f.name} onChange={e => set('name', e.target.value)} required /></div>
+      <div style={{ marginBottom: 12 }}><label>Görev başlığı</label><input style={{ width: '100%' }} value={f.title} onChange={e => set('title', e.target.value)} required /></div>
+      <div style={{ marginBottom: 12 }}><label>Açıklama</label><textarea value={f.description} onChange={e => set('description', e.target.value)} /></div>
+      <div className="grid">
+        <div><label>Kategori</label><select value={f.category_id} onChange={e => set('category_id', e.target.value)}>{c.catList.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></div>
+        <div><label>Vardiya</label><select value={f.shift} onChange={e => set('shift', e.target.value)}>{Object.entries(SHIFTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
+        <div><label>Varsayılan sorumlu (isteğe bağlı)</label><select value={f.assignee} onChange={e => set('assignee', e.target.value)}><option value="">Atanmamış</option>{c.people.filter(p => p.active).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}</select></div>
+        <div><label>Varsayılan süre (isteğe bağlı)</label><div className="inline"><input type="number" min="1" value={f.due_n} onChange={e => set('due_n', e.target.value)} />
+          <select value={f.due_unit} onChange={e => set('due_unit', e.target.value)}><option value="saat">saat</option><option value="gün">gün</option></select></div></div>
+      </div>
+      {msg && <div className="err">{msg}</div>}
+      <div className="inline" style={{ marginTop: 14 }}><button className="btn">Kaydet</button><button type="button" className="btn ghost" onClick={onCancel}>İptal</button></div>
     </form>
   );
 }
