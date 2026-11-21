@@ -10,15 +10,18 @@ const bad = (m, s = 400) => Response.json({ error: m }, { status: s });
 
 async function adminId(req, sb) {
   const token = (req.headers.get('authorization') || '').replace('Bearer ', '');
-  const { data } = await sb.auth.getUser(token);
-  if (!data?.user) return null;
-  const { data: p } = await sb.from('profiles').select('role,active').eq('id', data.user.id).single();
-  return p && p.role === 'admin' && p.active ? data.user.id : null;
+  if (!token) return { err: 'Oturum bilgisi sunucuya ulaşmadı (token yok). Çıkış yapıp tekrar girin.' };
+  const { data, error } = await sb.auth.getUser(token);
+  if (!data?.user) return { err: 'Oturum doğrulanamadı: ' + (error?.message || 'bilinmeyen hata') + ' (SUPABASE_SERVICE_ROLE_KEY doğru mu?)' };
+  const { data: p, error: e2 } = await sb.from('profiles').select('role,active').eq('id', data.user.id).single();
+  if (!p) return { err: 'Profil okunamadı: ' + (e2?.message || 'satır yok') + ' (SUPABASE_SERVICE_ROLE_KEY doğru mu?)' };
+  if (p.role !== 'admin' || !p.active) return { err: 'Bu işlem için yönetici olmalısınız.' };
+  return { id: data.user.id };
 }
 
 export async function POST(req) {
   const pepper = process.env.PIN_PEPPER; if (!pepper) return bad('Sunucu ayarı eksik (PIN_PEPPER).', 500);
-  const sb = db(); if (!(await adminId(req, sb))) return bad('Yetkisiz.', 403);
+  const sb = db(); const g = await adminId(req, sb); if (!g.id) return bad(g.err, 403);
   const b = await req.json().catch(() => ({}));
   const username = String(b.username || '').trim().toLowerCase(); const pin = String(b.pin || '');
   if (!String(b.full_name || '').trim()) return bad('İsim gerekli.');
@@ -36,7 +39,7 @@ export async function POST(req) {
 
 export async function PATCH(req) {
   const pepper = process.env.PIN_PEPPER; if (!pepper) return bad('Sunucu ayarı eksik (PIN_PEPPER).', 500);
-  const sb = db(); const me = await adminId(req, sb); if (!me) return bad('Yetkisiz.', 403);
+  const sb = db(); const g = await adminId(req, sb); if (!g.id) return bad(g.err, 403); const me = g.id;
   const b = await req.json().catch(() => ({}));
   if (!b.id) return bad('Kullanıcı seçilmedi.');
   if (b.id === me && ((b.role && b.role !== 'admin') || b.active === false)) return bad('Kendi yönetici yetkinizi veya hesabınızı kapatamazsınız.');
