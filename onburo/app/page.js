@@ -54,6 +54,8 @@ export default function App() {
   const [people, setPeople] = useState([]);
   const [catList, setCatList] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [loadErr, setLoadErr] = useState('');
+  
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -63,8 +65,9 @@ export default function App() {
 
   useEffect(() => {
     if (!session) { setMe(null); return; }
-    (async () => {
+     (async () => {
       const [p, c] = await Promise.all([supabase.from('profiles').select('*').order('full_name'), supabase.from('categories').select('*').order('id')]);
+      if (p.error) { setLoadErr(p.error.message); return; }
       setPeople(p.data || []); setCatList(c.data || []);
       setMe((p.data || []).find(x => x.id === session.user.id) || null);
     })();
@@ -82,7 +85,9 @@ export default function App() {
 
   if (session === undefined) return null;
   if (!session) return <Login />;
-  if (!me || !me.active) return <main><p className="empty">Hesabınız henüz etkinleştirilmemiş. Lütfen yöneticiyle iletişime geçin.</p><button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>;
+  if (!me || !me.active) return <main><p className="empty">Hesabınız henüz etkinleştirilmemiş. Lütfen yöneticiyle iletişime geçin.</p>
+    <p className="err">Giriş yapılan: {session.user.email} · Okunan profil sayısı: {people.length} {loadErr && `· Hata: ${loadErr}`}</p>
+    <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>;
 
   const tabs = [['mine', 'Görevlerim'], ...(isMgr ? [['shift', 'Vardiya / Gün'], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : [])];
   const common = { me, names, cats, catList, people, tasks, setTasks, toggle };
