@@ -1,52 +1,103 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { todayStr, addDays, monday, SHIFT_END, dateOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor } from '../lib/util';
 
-const TZ = 'Europe/Istanbul';
-const todayStr = () => new Date().toLocaleDateString('sv-SE', { timeZone: TZ });
-const addDays = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
-const monday = s => { const d = new Date(s + 'T00:00:00Z'); return addDays(s, -((d.getUTCDay() + 6) % 7)); };
-const fmt = s => new Date(s + 'T00:00:00Z').toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const SHIFTS = { A: 'A Vardiyası (08:00-16:00)', B: 'B Vardiyası (16:00-00:00)', C: 'C Vardiyası (00:00-08:00)' };
+const SHIFT_NAME = k => SHIFTS[k].split(' (')[0];
 const ROLES = { admin: 'Yönetici', supervisor: 'Süpervizör', receptionist: 'Resepsiyonist' };
 const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
+const REPEATS = { none: 'Tek seferlik', daily: 'Her gün', weekly: 'Haftanın belirli günleri', monthly_first: 'Her ayın ilk günü', monthly_last: 'Her ayın son günü' };
+const PALETTE = ['#1f5bc4', '#0f8b8d', '#7a4eab', '#b4540a', '#c2185b'];
+const catColor = (catList, id) => { const i = catList.findIndex(c => c.id === id); return i < 0 ? '#6b7280' : PALETTE[i % PALETTE.length]; };
+const repeatText = t => t.recurrence === 'weekly' ? (t.weekdays || []).map(d => DAYS[d - 1]).join(', ') : REPEATS[t.recurrence];
+const byDue = (a, b) => (a.status === 'done') - (b.status === 'done') || new Date(a.due_at || 0) - new Date(b.due_at || 0);
 
+/* ---------- Giriş ---------- */
 function Login() {
-  const [email, setEmail] = useState(''); const [pw, setPw] = useState(''); const [err, setErr] = useState('');
+  const [mode, setMode] = useState('pin');
+  const [u, setU] = useState(''); const [pin, setPin] = useState('');
+  const [email, setEmail] = useState(''); const [pw, setPw] = useState('');
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
   const go = async e => {
-    e.preventDefault(); setErr('');
-    const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
-    if (error) setErr('E-posta veya şifre hatalı.');
+    e.preventDefault(); setErr(''); setBusy(true);
+    if (mode === 'pin') {
+      const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, pin }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) setErr(j.error || 'Giriş başarısız.');
+      else await supabase.auth.setSession({ access_token: j.access_token, refresh_token: j.refresh_token });
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
+      if (error) setErr('E-posta veya şifre hatalı.');
+    }
+    setBusy(false);
   };
   return (
     <form className="login" onSubmit={go}>
       <h2>Önbüro Görevler</h2>
-      <label>E-posta</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required />
-      <label>Şifre</label><input type="password" value={pw} onChange={e => setPw(e.target.value)} required />
+      {mode === 'pin' ? (<>
+        <label>Kullanıcı adı</label><input value={u} onChange={e => setU(e.target.value)} autoComplete="username" autoCapitalize="none" required />
+        <label>PIN</label><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ''))} autoComplete="current-password" required />
+      </>) : (<>
+        <label>E-posta</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required />
+        <label>Şifre</label><input type="password" value={pw} onChange={e => setPw(e.target.value)} required />
+      </>)}
       {err && <div className="err">{err}</div>}
-      <button className="btn" style={{ width: '100%' }}>Giriş yap</button>
+      <button className="btn" style={{ width: '100%' }} disabled={busy}>Giriş yap</button>
+      <p className="meta" style={{ textAlign: 'center', marginBottom: 0 }}>
+        <a href="#" onClick={e => { e.preventDefault(); setErr(''); setMode(mode === 'pin' ? 'mail' : 'pin'); }}>{mode === 'pin' ? 'E-posta ile giriş (ilk yönetici)' : 'Kullanıcı adı ve PIN ile giriş'}</a>
+      </p>
     </form>
   );
 }
 
-function Task({ t, names, cats, onToggle, who }) {
-  const late = t.status === 'open' && t.due_date < todayStr();
+/* ---------- Görev kartı ve gruplar ---------- */
+function Task({ t, c, who }) {
+  const late = t.status === 'open' && t.due_at && new Date(t.due_at) < new Date();
   return (
-    <div className={`task ${t.status === 'done' ? 'done' : ''} ${late ? 'late' : ''}`}>
-      <input type="checkbox" checked={t.status === 'done'} onChange={() => onToggle(t)} aria-label="Tamamlandı" />
-      <div>
+    <div className={`task ${t.status === 'done' ? 'done' : ''} ${late ? 'late' : ''}`} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
+      <input type="checkbox" checked={t.status === 'done'} onChange={() => c.toggle(t)} aria-label="Tamamlandı" />
+      <div style={{ flex: 1 }}>
         <div className="t">{t.title}</div>
         {t.description && <div className="meta">{t.description}</div>}
         <div className="meta">
-          {SHIFTS[t.shift].split(' (')[0]} · {cats[t.category_id] || 'Kategorisiz'}
-          {who && ` · ${names[t.assignee] || 'Atanmamış'}`} · Son tarih: {fmt(t.due_date)}
+          {SHIFT_NAME(t.shift)}{who && ` · ${c.names[t.assignee] || 'Atanmamış'}`} · Son: {t.due_at ? fmtDT(t.due_at) : fmtD(t.due_date)}
           {late && <span className="late-tag"> · Gecikti</span>}
         </div>
       </div>
+      {c.isMgr && (
+        <div className="acts">
+          <select className="assign" value="" onChange={e => c.assign(t, e.target.value)} aria-label="Ata">
+            <option value="">{t.assignee ? 'Yeniden ata…' : 'Ata…'}</option>
+            {c.people.filter(p => p.active).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}
+          </select>
+          <button className="btn ghost sm" onClick={() => c.edit({ kind: 'task', data: t })}>Düzenle</button>
+        </div>
+      )}
     </div>
   );
 }
 
+function ByCategory({ list, c, who }) {
+  const known = c.catList.map(k => [k, list.filter(t => t.category_id === k.id)]);
+  const none = list.filter(t => !c.catList.some(k => k.id === t.category_id));
+  const groups = [...known, [{ id: null, name: 'Kategorisiz' }, none]].filter(([, l]) => l.length);
+  return groups.map(([k, l]) => (
+    <div key={k.id ?? 'none'} className="grp">
+      <div className="grph"><span className="dot" style={{ background: catColor(c.catList, k.id) }} />{k.name} <span className="meta">({l.length})</span></div>
+      {[...l].sort(byDue).map(t => <Task key={t.id} t={t} c={c} who={who} />)}
+    </div>
+  ));
+}
+
+function ShiftGroups({ list, c, who }) {
+  return Object.keys(SHIFTS).map(s => {
+    const l = list.filter(t => t.shift === s);
+    return l.length > 0 && <div key={s}><h3>{SHIFTS[s]}</h3><ByCategory list={l} c={c} who={who} /></div>;
+  });
+}
+
+/* ---------- Ana uygulama ---------- */
 export default function App() {
   const [session, setSession] = useState(undefined);
   const [me, setMe] = useState(null);
@@ -55,7 +106,9 @@ export default function App() {
   const [catList, setCatList] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [loadErr, setLoadErr] = useState('');
-  
+  const [ver, setVer] = useState(0);
+  const [editing, setEditing] = useState(null);
+  const [unCount, setUnCount] = useState(0);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -63,77 +116,112 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    if (!session) { setMe(null); return; }
-     (async () => {
-      const [p, c] = await Promise.all([supabase.from('profiles').select('*').order('full_name'), supabase.from('categories').select('*').order('id')]);
-      if (p.error) { setLoadErr(p.error.message); return; }
-      setPeople(p.data || []); setCatList(c.data || []);
-      setMe((p.data || []).find(x => x.id === session.user.id) || null);
-    })();
+  const loadPeople = useCallback(async () => {
+    if (!session) return;
+    const [p, k] = await Promise.all([supabase.from('profiles').select('*').order('full_name'), supabase.from('categories').select('*').order('id')]);
+    if (p.error) { setLoadErr(p.error.message); return; }
+    setPeople(p.data || []); setCatList(k.data || []);
+    setMe((p.data || []).find(x => x.id === session.user.id) || null);
   }, [session]);
+  useEffect(() => { if (!session) { setMe(null); return; } loadPeople(); }, [session, loadPeople]);
 
-  const names = Object.fromEntries(people.map(p => [p.id, p.full_name || p.email]));
-  const cats = Object.fromEntries(catList.map(c => [c.id, c.name]));
-  const isMgr = me && (me.role === 'admin' || me.role === 'supervisor');
+  const isMgr = !!me && me.active && (me.role === 'admin' || me.role === 'supervisor');
+  const isAdmin = !!me && me.active && me.role === 'admin';
 
+  useEffect(() => {
+    if (!isMgr) return;
+    supabase.from('tasks').select('id', { count: 'exact', head: true }).is('assignee', null).eq('status', 'open').then(({ count }) => setUnCount(count || 0));
+  }, [isMgr, ver]);
+
+  const bump = () => setVer(v => v + 1);
   const toggle = async t => {
     const done = t.status !== 'done';
-    await supabase.from('tasks').update({ status: done ? 'done' : 'open', completed_at: done ? new Date().toISOString() : null }).eq('id', t.id);
-    setTasks(ts => ts.map(x => x.id === t.id ? { ...x, status: done ? 'done' : 'open' } : x));
+    const { error } = await supabase.from('tasks').update({ status: done ? 'done' : 'open', completed_at: done ? new Date().toISOString() : null }).eq('id', t.id);
+    if (!error) setTasks(ts => ts.map(x => x.id === t.id ? { ...x, status: done ? 'done' : 'open' } : x));
   };
+  const assign = async (t, uid) => {
+    if (!uid) return;
+    const { error } = await supabase.from('tasks').update({ assignee: uid }).eq('id', t.id);
+    if (!error) { setTasks(ts => ts.map(x => x.id === t.id ? { ...x, assignee: uid } : x)); bump(); }
+  };
+
+  const names = Object.fromEntries(people.map(p => [p.id, p.full_name || p.username || p.email]));
+  const c = { me, names, catList, people, isMgr, tasks, setTasks, toggle, assign, ver, bump, edit: setEditing, reloadPeople: loadPeople };
 
   if (session === undefined) return null;
   if (!session) return <Login />;
-  if (!me || !me.active) return <main><p className="empty">Hesabınız henüz etkinleştirilmemiş. Lütfen yöneticiyle iletişime geçin.</p>
-    <p className="err">Giriş yapılan: {session.user.email} · Okunan profil sayısı: {people.length} {loadErr && `· Hata: ${loadErr}`}</p>
-    <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>;
+  if (!me || !me.active) return (
+    <main><p className="empty">Hesabınız henüz etkinleştirilmemiş. Lütfen yöneticiyle iletişime geçin.</p>
+      {loadErr && <p className="err">Hata: {loadErr}</p>}
+      <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>
+  );
 
-  const tabs = [['mine', 'Görevlerim'], ...(isMgr ? [['shift', 'Vardiya / Gün'], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : [])];
-  const common = { me, names, cats, catList, people, tasks, setTasks, toggle };
+  const tabs = [['mine', 'Görevlerim'],
+    ...(isMgr ? [['shift', 'Vardiya / Gün'], ['un', `Atanmamış${unCount ? ` (${unCount})` : ''}`], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : []),
+    ...(isAdmin ? [['users', 'Kullanıcılar']] : [])];
+  const go = k => { setTasks([]); setTab(k); };
+
   return (
     <>
       <header>
         <b>Grand Sapphire · Önbüro Görevler</b>
-        <span>{me.full_name || me.email} ({ROLES[me.role]}) · <a href="#" style={{ color: '#fff' }} onClick={e => { e.preventDefault(); supabase.auth.signOut(); }}>Çıkış</a></span>
+        <span>{me.full_name || me.username} ({ROLES[me.role]}) · <a href="#" style={{ color: '#fff' }} onClick={e => { e.preventDefault(); supabase.auth.signOut(); }}>Çıkış</a></span>
       </header>
-      <nav role="tablist">{tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}>{l}</button>)}</nav>
+      <nav role="tablist">{tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} onClick={() => go(k)}>{l}</button>)}</nav>
       <main>
-        {tab === 'mine' && <Mine {...common} />}
-        {tab === 'shift' && isMgr && <ShiftView {...common} />}
-        {tab === 'report' && isMgr && <Report {...common} />}
-        {tab === 'manage' && isMgr && <Manage {...common} />}
+        {tab === 'mine' && <Mine c={c} />}
+        {tab === 'shift' && isMgr && <ShiftView c={c} />}
+        {tab === 'un' && isMgr && <Unassigned c={c} />}
+        {tab === 'report' && isMgr && <Report c={c} />}
+        {tab === 'manage' && isMgr && <Manage c={c} />}
+        {tab === 'users' && isAdmin && <Users c={c} />}
       </main>
+      {editing && (
+        <div className="modal" onClick={() => setEditing(null)}>
+          <div className="mbox" onClick={e => e.stopPropagation()}>
+            <h2>{editing.kind === 'tpl' ? 'Tekrarlayan görevi düzenle' : 'Görevi düzenle'}</h2>
+            <TaskForm key={editing.data.id} mode={editing.kind === 'tpl' ? 'tpl-edit' : 'task-edit'} initial={editing.data} c={c}
+              onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
-function Mine({ me, names, cats, tasks, setTasks, toggle }) {
-  const today = todayStr();
-  const load = useCallback(async () => {
+/* ---------- Ekranlar ---------- */
+function Mine({ c }) {
+  const { me, tasks, setTasks, ver } = c; const today = todayStr();
+  useEffect(() => { (async () => {
     const { data } = await supabase.from('tasks').select('*').eq('assignee', me.id)
-      .or(`status.eq.open,due_date.gte.${addDays(today, -1)}`).lte('due_date', addDays(today, 7)).order('due_date');
+      .or(`status.eq.open,due_date.gte.${addDays(today, -1)}`).lte('due_date', addDays(today, 7));
     setTasks(data || []);
-  }, [me.id, today, setTasks]);
-  useEffect(() => { load(); }, [load]);
-  const open = tasks.filter(t => t.status === 'open' && t.due_date <= today);
-  const soon = tasks.filter(t => t.status === 'open' && t.due_date > today);
-  const done = tasks.filter(t => t.status === 'done');
-  const L = ({ list, title }) => list.length > 0 && <><h3>{title} ({list.length})</h3>{list.map(t => <Task key={t.id} t={t} names={names} cats={cats} onToggle={toggle} />)}</>;
+  })(); }, [me.id, today, ver, setTasks]);
+  const now = new Date(); const open = tasks.filter(t => t.status === 'open' && t.due_at);
+  const late = open.filter(t => new Date(t.due_at) < now).length;
+  const soon = open.filter(t => new Date(t.due_at) >= now && new Date(t.due_at) < new Date(now.getTime() + 2 * 3600e3)).length;
   return (<>
     <h2>Görevlerim</h2>
-    {!tasks.length && <div className="empty">Size atanmış açık görev yok.</div>}
-    <L list={open} title="Bugün ve geciken" /><L list={soon} title="Yaklaşan (7 gün)" /><L list={done} title="Tamamlanan" />
+    {(late > 0 || soon > 0) && <div className="alert">{late > 0 && <b>{late} görev gecikti</b>}{late > 0 && soon > 0 && ' · '}{soon > 0 && <span>{soon} görev 2 saat içinde bitiyor</span>}</div>}
+    {!tasks.length && <div className="empty">Size atanmış görev yok.</div>}
+    <ByCategory list={tasks} c={c} />
   </>);
 }
 
-function ShiftView({ names, cats, tasks, setTasks, toggle }) {
-  const [date, setDate] = useState(todayStr()); const [shift, setShift] = useState('');
+function ShiftView({ c }) {
+  const { tasks, setTasks, ver } = c; const today = todayStr();
+  const [date, setDate] = useState(today); const [shift, setShift] = useState('');
   useEffect(() => { (async () => {
-    let q = supabase.from('tasks').select('*').eq('due_date', date).order('shift');
-    if (shift) q = q.eq('shift', shift);
-    const { data } = await q; setTasks(data || []);
-  })(); }, [date, shift, setTasks]);
+    let q = supabase.from('tasks').select('*').eq('due_date', date); if (shift) q = q.eq('shift', shift);
+    const { data } = await q; let all = data || [];
+    if (date === today) {
+      let q2 = supabase.from('tasks').select('*').eq('status', 'open').lt('due_date', today); if (shift) q2 = q2.eq('shift', shift);
+      const r = await q2; all = [...all, ...(r.data || [])];
+    }
+    setTasks(all);
+  })(); }, [date, shift, ver, today, setTasks]);
+  const day = tasks.filter(t => t.due_date === date);
+  const late = tasks.filter(t => t.due_date < date && t.status === 'open');
   return (<>
     <h2>Vardiya / Günlük görevler</h2>
     <div className="bar">
@@ -141,71 +229,188 @@ function ShiftView({ names, cats, tasks, setTasks, toggle }) {
       <select value={shift} onChange={e => setShift(e.target.value)}>
         <option value="">Tüm vardiyalar</option>{Object.entries(SHIFTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
       </select>
-      <span className="meta">{tasks.filter(t => t.status === 'done').length} / {tasks.length} tamamlandı</span>
+      <span className="meta">{day.filter(t => t.status === 'done').length} / {day.length} tamamlandı</span>
     </div>
-    {!tasks.length && <div className="empty">Bu gün için görev yok.</div>}
-    {Object.keys(SHIFTS).map(s => { const l = tasks.filter(t => t.shift === s); return l.length > 0 && <div key={s}><h3>{SHIFTS[s]}</h3>{l.map(t => <Task key={t.id} t={t} names={names} cats={cats} onToggle={toggle} who />)}</div>; })}
+    {late.length > 0 && <><h3 style={{ color: 'var(--late)' }}>Geciken açık görevler ({late.length})</h3><ShiftGroups list={late} c={c} who /></>}
+    {!day.length && <div className="empty">Bu gün için görev yok.</div>}
+    <ShiftGroups list={day} c={c} who />
   </>);
 }
 
-function Report({ people }) {
+function Unassigned({ c }) {
+  const { tasks, setTasks, ver } = c;
+  useEffect(() => { (async () => {
+    const { data } = await supabase.from('tasks').select('*').is('assignee', null).eq('status', 'open').order('due_at');
+    setTasks(data || []);
+  })(); }, [ver, setTasks]);
+  return (<>
+    <h2>Atanmamış görevler</h2>
+    <p className="meta">Sağdaki "Ata…" listesinden kişiyi seçtiğiniz anda görev o kişiye atanır.</p>
+    {!tasks.length && <div className="empty">Atanmamış açık görev yok.</div>}
+    <ShiftGroups list={tasks} c={c} who />
+  </>);
+}
+
+function Report({ c }) {
   const today = todayStr(); const thisMon = monday(today); const lastMon = addDays(thisMon, -7);
   const [rows, setRows] = useState([]);
   useEffect(() => { (async () => {
     const { data } = await supabase.from('tasks').select('assignee,status,due_date').gte('due_date', lastMon).lte('due_date', addDays(thisMon, 6));
     setRows(data || []);
   })(); }, [lastMon, thisMon]);
-  const stat = (id, from) => { const l = rows.filter(t => t.assignee === id && t.due_date >= from && t.due_date <= addDays(from, 6));
-    return { n: l.length, done: l.filter(t => t.status === 'done').length, late: l.filter(t => t.status === 'open' && t.due_date < today).length }; };
+  const stat = (id, from) => {
+    const l = rows.filter(t => t.assignee === id && t.due_date >= from && t.due_date <= addDays(from, 6));
+    return { n: l.length, done: l.filter(t => t.status === 'done').length, late: l.filter(t => t.status === 'open' && t.due_date < today).length };
+  };
   const Tbl = ({ from, title }) => (<>
-    <h3>{title} ({fmt(from)} – {fmt(addDays(from, 6))})</h3>
+    <h3>{title} ({fmtD(from)} – {fmtD(addDays(from, 6))})</h3>
     <table><thead><tr><th>Personel</th><th className="n">Toplam</th><th className="n">Tamamlanan</th><th className="n">Açık</th><th className="n">Geciken</th></tr></thead>
-      <tbody>{people.filter(p => p.active).map(p => { const s = stat(p.id, from); return (
-        <tr key={p.id}><td>{p.full_name || p.email}</td><td className="n">{s.n}</td><td className="n">{s.done}</td><td className="n">{s.n - s.done}</td><td className="n">{s.late}</td></tr>); })}</tbody></table></>);
+      <tbody>{c.people.filter(p => p.active).map(p => { const s = stat(p.id, from); return (
+        <tr key={p.id}><td>{p.full_name || p.username}</td><td className="n">{s.n}</td><td className="n">{s.done}</td><td className="n">{s.n - s.done}</td><td className="n">{s.late}</td></tr>); })}</tbody></table></>);
   return (<><h2>Personel bazlı rapor</h2><Tbl from={thisMon} title="Bu hafta" /><Tbl from={lastMon} title="Geçen hafta" /></>);
 }
 
-function Manage({ me, people, catList }) {
-  const blank = { title: '', description: '', category_id: catList[0]?.id || '', shift: 'A', assignee: '', due_date: todayStr(), repeat: 'none', weekdays: [1, 2, 3, 4, 5, 6, 7] };
-  const [f, setF] = useState(blank); const [msg, setMsg] = useState(''); const [tpls, setTpls] = useState([]);
-  const loadT = useCallback(async () => { const { data } = await supabase.from('templates').select('*').eq('active', true).order('title'); setTpls(data || []); }, []);
-  useEffect(() => { loadT(); }, [loadT]);
-  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
-  const save = async e => {
-    e.preventDefault(); setMsg('');
-    const base = { title: f.title, description: f.description || null, category_id: f.category_id || null, shift: f.shift, assignee: f.assignee || null };
-    let error;
-    if (f.repeat === 'none') ({ error } = await supabase.from('tasks').insert({ ...base, due_date: f.due_date }));
-    else {
-      const wd = f.repeat === 'daily' ? [1, 2, 3, 4, 5, 6, 7] : f.weekdays;
-      const { data, error: e1 } = await supabase.from('templates').insert({ ...base, recurrence: f.repeat, weekdays: wd }).select().single();
-      error = e1;
-      const today = todayStr(); const w = new Date(today + 'T00:00:00Z').getUTCDay() || 7;
-      if (!e1 && wd.includes(w)) await supabase.from('tasks').insert({ ...base, due_date: today, template_id: data.id });
-    }
-    if (error) setMsg('Kaydedilemedi: ' + error.message); else { setMsg('Görev kaydedildi.'); setF({ ...blank, shift: f.shift }); loadT(); }
-  };
-  const stop = async id => { await supabase.from('templates').update({ active: false }).eq('id', id); loadT(); };
+function Manage({ c }) {
+  const [tpls, setTpls] = useState([]); const [key, setKey] = useState(0);
+  const load = useCallback(async () => { const { data } = await supabase.from('templates').select('*').eq('active', true).order('title'); setTpls(data || []); }, []);
+  useEffect(() => { load(); }, [load, c.ver]);
+  const stop = async id => { await supabase.from('templates').update({ active: false }).eq('id', id); load(); };
   return (<>
     <h2>Görev ekle</h2>
+    <TaskForm key={key} mode="new" c={c} onSaved={() => { setKey(k => k + 1); c.bump(); }} />
+    <h3>Aktif tekrarlayan görevler ({tpls.length})</h3>
+    {!tpls.length && <div className="empty">Tekrarlayan görev yok.</div>}
+    {tpls.map(t => (
+      <div className="task" key={t.id} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
+        <div style={{ flex: 1 }}><div className="t">{t.title}</div>
+          <div className="meta">{SHIFT_NAME(t.shift)} · {repeatText(t)} · Son saat: {(t.due_time || SHIFT_END[t.shift]).slice(0, 5)} · {c.names[t.assignee] || 'Atanmamış'}</div></div>
+        <div className="acts">
+          <button className="btn ghost sm" onClick={() => c.edit({ kind: 'tpl', data: t })}>Düzenle</button>
+          <button className="btn ghost sm" onClick={() => stop(t.id)}>Durdur</button>
+        </div>
+      </div>))}
+  </>);
+}
+
+/* ---------- Görev formu (yeni / düzenle / şablon düzenle) ---------- */
+function TaskForm({ mode, initial, c, onSaved, onCancel }) {
+  const isTpl = mode === 'tpl-edit'; const isNew = mode === 'new'; const i = initial || {};
+  const [f, setF] = useState({
+    title: i.title || '', description: i.description || '', category_id: i.category_id ?? (c.catList[0]?.id || ''),
+    shift: i.shift || 'A', assignee: i.assignee || '',
+    dmode: 'exact', due_local: i.due_at ? toLocalInput(i.due_at) : `${todayStr()}T18:00`, rel_n: 2, rel_unit: 'saat',
+    repeat: isTpl ? i.recurrence : 'none', weekdays: i.weekdays || [1, 2, 3, 4, 5, 6, 7], due_time: (i.due_time || '').slice(0, 5)
+  });
+  const [msg, setMsg] = useState('');
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const recurring = isTpl || (isNew && f.repeat !== 'none');
+
+  const save = async e => {
+    e.preventDefault(); setMsg('');
+    const base = { title: f.title.trim(), description: f.description || null, category_id: f.category_id || null, shift: f.shift, assignee: f.assignee || null };
+    const wd = f.repeat === 'weekly' ? f.weekdays : [1, 2, 3, 4, 5, 6, 7];
+    if (f.repeat === 'weekly' && !wd.length) { setMsg('En az bir gün seçin.'); return; }
+    let error;
+    if (isTpl) {
+      ({ error } = await supabase.from('templates').update({ ...base, recurrence: f.repeat, weekdays: wd, due_time: f.due_time || null }).eq('id', i.id));
+    } else if (recurring) {
+      const { data, error: e1 } = await supabase.from('templates').insert({ ...base, recurrence: f.repeat, weekdays: wd, due_time: f.due_time || null }).select().single();
+      error = e1; const today = todayStr();
+      if (!e1 && occursOn(data, today)) await supabase.from('tasks').insert({ ...base, due_date: today, due_at: dueFor(data, today), template_id: data.id });
+    } else {
+      let due_at;
+      if (f.dmode === 'exact') { if (!f.due_local) { setMsg('Tarih ve saat girin.'); return; } due_at = `${f.due_local}:00+03:00`; }
+      else { const n = Number(f.rel_n); if (!(n > 0)) { setMsg('Süre 0\'dan büyük olmalı.'); return; } due_at = new Date(Date.now() + n * (f.rel_unit === 'saat' ? 3600e3 : 86400e3)).toISOString(); }
+      const row = { ...base, due_at, due_date: dateOf(due_at) };
+      ({ error } = isNew ? await supabase.from('tasks').insert(row) : await supabase.from('tasks').update(row).eq('id', i.id));
+    }
+    if (error) setMsg('Kaydedilemedi: ' + error.message); else onSaved();
+  };
+  const del = async () => { if (confirm('Bu görev silinsin mi?')) { await supabase.from('tasks').delete().eq('id', i.id); onSaved(); } };
+
+  return (
     <form className="card" onSubmit={save}>
       <div style={{ marginBottom: 12 }}><label>Görev başlığı</label><input style={{ width: '100%' }} value={f.title} onChange={e => set('title', e.target.value)} required /></div>
       <div style={{ marginBottom: 12 }}><label>Açıklama</label><textarea value={f.description} onChange={e => set('description', e.target.value)} /></div>
       <div className="grid">
-        <div><label>Kategori</label><select value={f.category_id} onChange={e => set('category_id', e.target.value)}>{catList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+        <div><label>Kategori</label><select value={f.category_id} onChange={e => set('category_id', e.target.value)}>{c.catList.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></div>
         <div><label>Vardiya</label><select value={f.shift} onChange={e => set('shift', e.target.value)}>{Object.entries(SHIFTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
-        <div><label>Sorumlu</label><select value={f.assignee} onChange={e => set('assignee', e.target.value)}><option value="">Atanmamış</option>{people.filter(p => p.active).map(p => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}</select></div>
-        <div><label>Tekrar</label><select value={f.repeat} onChange={e => set('repeat', e.target.value)}><option value="none">Tek seferlik</option><option value="daily">Her gün</option><option value="weekly">Haftanın belirli günleri</option></select></div>
-        {f.repeat === 'none' && <div><label>Son tarih</label><input type="date" value={f.due_date} onChange={e => set('due_date', e.target.value)} required /></div>}
+        <div><label>Sorumlu</label><select value={f.assignee} onChange={e => set('assignee', e.target.value)}><option value="">Atanmamış</option>{c.people.filter(p => p.active).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}</select></div>
+        {(isNew || isTpl) && <div><label>Tekrar</label><select value={f.repeat} onChange={e => set('repeat', e.target.value)}>{Object.entries(REPEATS).filter(([k]) => !(isTpl && k === 'none')).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>}
       </div>
-      {f.repeat === 'weekly' && <div className="days" style={{ marginTop: 12 }}>{DAYS.map((d, i) => <label key={d}><input type="checkbox" checked={f.weekdays.includes(i + 1)} onChange={e => set('weekdays', e.target.checked ? [...f.weekdays, i + 1] : f.weekdays.filter(x => x !== i + 1))} />{d}</label>)}</div>}
-      {msg && <div className={msg.startsWith('Kaydedilemedi') ? 'err' : 'meta'} style={{ marginTop: 10 }}>{msg}</div>}
-      <div style={{ marginTop: 14 }}><button className="btn">Görevi kaydet</button></div>
+      {f.repeat === 'weekly' && <div className="days" style={{ marginTop: 12 }}>{DAYS.map((d, n) => <label key={d}><input type="checkbox" checked={f.weekdays.includes(n + 1)} onChange={e => set('weekdays', e.target.checked ? [...f.weekdays, n + 1] : f.weekdays.filter(x => x !== n + 1))} />{d}</label>)}</div>}
+      <div className="sep" />
+      {recurring ? (
+        <div><label>Son saat (boş bırakılırsa vardiya sonu: {SHIFT_END[f.shift]})</label><input type="time" value={f.due_time} onChange={e => set('due_time', e.target.value)} /></div>
+      ) : (<>
+        <label>Deadline</label>
+        <div className="radios">
+          <label><input type="radio" checked={f.dmode === 'exact'} onChange={() => set('dmode', 'exact')} />Kesin tarih ve saat</label>
+          <label><input type="radio" checked={f.dmode === 'rel'} onChange={() => set('dmode', 'rel')} />Süre (şimdiden itibaren)</label>
+        </div>
+        {f.dmode === 'exact'
+          ? <input type="datetime-local" value={f.due_local} onChange={e => set('due_local', e.target.value)} required />
+          : <div className="inline"><input type="number" min="1" value={f.rel_n} onChange={e => set('rel_n', e.target.value)} />
+              <select value={f.rel_unit} onChange={e => set('rel_unit', e.target.value)}><option value="saat">saat</option><option value="gün">gün</option></select><span className="meta">sonra</span></div>}
+      </>)}
+      {msg && <div className="err">{msg}</div>}
+      <div className="inline" style={{ marginTop: 14 }}>
+        <button className="btn">Kaydet</button>
+        {onCancel && <button type="button" className="btn ghost" onClick={onCancel}>İptal</button>}
+        {mode === 'task-edit' && <button type="button" className="btn danger" style={{ marginLeft: 'auto' }} onClick={del}>Görevi sil</button>}
+      </div>
     </form>
-    <h3>Aktif tekrarlayan görevler ({tpls.length})</h3>
-    {!tpls.length && <div className="empty">Tekrarlayan görev yok.</div>}
-    {tpls.map(t => <div className="task" key={t.id}><div style={{ flex: 1 }}><div className="t">{t.title}</div>
-      <div className="meta">{t.shift} Vardiyası · {t.recurrence === 'daily' ? 'Her gün' : t.weekdays.map(d => DAYS[d - 1]).join(', ')} · {people.find(p => p.id === t.assignee)?.full_name || 'Atanmamış'}</div></div>
-      <button className="btn ghost" onClick={() => stop(t.id)}>Durdur</button></div>)}
+  );
+}
+
+/* ---------- Kullanıcı yönetimi (yönetici) ---------- */
+function Users({ c }) {
+  const blank = { full_name: '', username: '', pin: '', role: 'receptionist', notify_email: '' };
+  const [f, setF] = useState(blank); const [msg, setMsg] = useState(''); const [ed, setEd] = useState(null);
+  const call = async (method, body) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const r = await fetch('/api/users', { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({})); return r.ok ? null : (j.error || 'İşlem başarısız.');
+  };
+  const add = async e => { e.preventDefault(); setMsg('');
+    const err = await call('POST', f); if (err) setMsg(err); else { setMsg('Kullanıcı eklendi.'); setF(blank); c.reloadPeople(); } };
+  const saveEd = async e => { e.preventDefault();
+    const b = { id: ed.id, full_name: ed.full_name, role: ed.role, active: ed.active, notify_email: ed.notify_email || '' };
+    if (ed.username) b.username = ed.username; if (ed.pin) b.pin = ed.pin;
+    const err = await call('PATCH', b); if (err) setEd({ ...ed, err }); else { setEd(null); c.reloadPeople(); } };
+  const roleSel = (v, fn) => <select value={v} onChange={e => fn(e.target.value)}>{Object.entries(ROLES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>;
+  return (<>
+    <h2>Kullanıcılar</h2>
+    {ed && (
+      <form className="card" onSubmit={saveEd}>
+        <h3 style={{ marginTop: 0 }}>Düzenle: {ed.full_name || ed.username}</h3>
+        <div className="grid">
+          <div><label>İsim</label><input value={ed.full_name} onChange={e => setEd({ ...ed, full_name: e.target.value })} required /></div>
+          <div><label>Kullanıcı adı</label><input value={ed.username || ''} onChange={e => setEd({ ...ed, username: e.target.value.toLowerCase() })} placeholder="örn. ayse.k" /></div>
+          <div><label>Yeni PIN (4-6 rakam, boş = değişmez)</label><input inputMode="numeric" maxLength={6} value={ed.pin || ''} onChange={e => setEd({ ...ed, pin: e.target.value.replace(/\D/g, '') })} /></div>
+          <div><label>Rol</label>{roleSel(ed.role, v => setEd({ ...ed, role: v }))}</div>
+          <div><label>Hatırlatma e-postası (isteğe bağlı)</label><input type="email" value={ed.notify_email || ''} onChange={e => setEd({ ...ed, notify_email: e.target.value })} /></div>
+          <div><label>Durum</label><select value={ed.active ? '1' : '0'} onChange={e => setEd({ ...ed, active: e.target.value === '1' })}><option value="1">Aktif</option><option value="0">Pasif (giriş yapamaz)</option></select></div>
+        </div>
+        {ed.err && <div className="err">{ed.err}</div>}
+        <div className="inline" style={{ marginTop: 14 }}><button className="btn">Kaydet</button><button type="button" className="btn ghost" onClick={() => setEd(null)}>İptal</button></div>
+      </form>
+    )}
+    <table><thead><tr><th>İsim</th><th>Kullanıcı adı</th><th>Rol</th><th>Durum</th><th /></tr></thead>
+      <tbody>{c.people.map(p => (
+        <tr key={p.id}><td>{p.full_name || '—'}</td><td>{p.username || <span className="meta">tanımsız</span>}</td><td>{ROLES[p.role]}</td><td>{p.active ? 'Aktif' : 'Pasif'}</td>
+          <td className="n"><button className="btn ghost sm" onClick={() => setEd({ ...p, pin: '' })}>Düzenle</button></td></tr>))}</tbody></table>
+    <h3>Yeni kullanıcı ekle</h3>
+    <form className="card" onSubmit={add}>
+      <div className="grid">
+        <div><label>İsim</label><input value={f.full_name} onChange={e => setF({ ...f, full_name: e.target.value })} required /></div>
+        <div><label>Kullanıcı adı</label><input value={f.username} onChange={e => setF({ ...f, username: e.target.value.toLowerCase() })} placeholder="örn. ayse.k" required /></div>
+        <div><label>PIN (4-6 rakam)</label><input inputMode="numeric" maxLength={6} value={f.pin} onChange={e => setF({ ...f, pin: e.target.value.replace(/\D/g, '') })} required /></div>
+        <div><label>Rol</label>{roleSel(f.role, v => setF({ ...f, role: v }))}</div>
+        <div><label>Hatırlatma e-postası (isteğe bağlı)</label><input type="email" value={f.notify_email} onChange={e => setF({ ...f, notify_email: e.target.value })} /></div>
+      </div>
+      {msg && <div className={msg === 'Kullanıcı eklendi.' ? 'meta' : 'err'} style={{ marginTop: 10 }}>{msg}</div>}
+      <div style={{ marginTop: 14 }}><button className="btn">Kullanıcıyı ekle</button></div>
+    </form>
   </>);
 }

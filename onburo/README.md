@@ -1,27 +1,29 @@
-# Önbüro Görevler — Kurulum (yaklaşık 30-45 dk)
+# Önbüro Görevler v2 — Güncelleme adımları
 
-## 1) Supabase
-1. supabase.com → New project (bölge: Frankfurt/Avrupa).
-2. SQL Editor → `supabase/schema.sql` içeriğini yapıştırıp çalıştırın.
-3. Authentication → Users → "Add user" ile 15 kullanıcıyı e-posta + şifre ile ekleyin (Auto Confirm işaretli).
-   Authentication → Providers → Email: "Confirm email" kapalı olsun, "Allow new users to sign up" kapalı olsun (herkes kayıt olamasın).
-4. SQL Editor'de kendinizi admin yapın:
-   `update profiles set role='admin', full_name='Adınız Soyadınız' where email='sizin@mail.com';`
-   Diğerleri için: `update profiles set role='supervisor', full_name='...' where email='...';`
-   (Rol verilmeyenler resepsiyonist olur.)
-5. Project Settings → API: URL, anon key ve service_role key'i not alın.
+## 1) Veritabanı (Supabase → SQL Editor)
+`supabase/migration_v2.sql` dosyasının içeriğini yapıştırıp **bir kez** çalıştırın.
+(Yeni alanlar eklenir, "Kasa ve Fatura" kategorisi kaldırılır; o kategorideki görevler "Operasyon"a taşınır.)
 
-## 2) Vercel
-1. Bu klasörü GitHub'a yükleyin → vercel.com → Add New Project → repoyu seçin.
-2. Environment Variables: `.env.example` içindeki değişkenleri girin.
-   `CRON_SECRET` için uzun rastgele bir metin yazın (Vercel cron isteğine otomatik ekler).
-3. Deploy. Her gün 07:00 (Türkiye saati) tekrarlayan görevler üretilir ve hatırlatma e-postası gider (`vercel.json`).
+## 2) Vercel ortam değişkeni (YENİ)
+Settings → Environment Variables → `PIN_PEPPER` ekleyin: uzun, rastgele bir metin (en az 16 karakter, boşluksuz).
+- Bu değer PIN'lerin güvenliği için kullanılır. Sonradan DEĞİŞTİRMEYİN; değişirse tüm PIN'ler geçersiz olur.
+- `SUPABASE_SERVICE_ROLE_KEY` zaten tanımlı olmalı (kullanıcı ekleme için gerekli).
 
-## E-posta hatırlatma (isteğe bağlı)
-resend.com ücretsiz hesap → API key → `RESEND_API_KEY`.
-Not: kendi alan adınızı doğrulamadan Resend sadece kendi adresinize gönderir; personele göndermek için alan adı doğrulayın.
+## 3) Dosyaları GitHub'a yükleyin
+Zip'teki tüm dosyaları aynı yerlerine yükleyin (aynı isimli dosyaların üzerine yazılır):
+- `app/page.js`, `app/globals.css` (değişti)
+- `app/api/cron/route.js` (değişti)
+- `app/api/login/route.js`, `app/api/users/route.js`, `lib/util.js` (yeni)
+- `supabase/migration_v2.sql` (yeni, sadece bilgi için)
+Vercel otomatik yeniden deploy eder. Deploy bittikten sonra **Redeploy** gerekmez, ama PIN_PEPPER'ı deploy'dan sonra eklediyseniz bir kez Redeploy edin.
 
-## Notlar
-- Resepsiyonist yalnızca kendine atanan görevleri görür; süpervizör ve yönetici tüm görevleri görür.
-- Ücretsiz Supabase planı 7 gün hiç kullanılmazsa projeyi duraklatır; otomatik yedek yoktur, ayda bir dışa aktarın.
-- Cron "Hobby" planda günde 1 kez çalışır, bu uygulama için yeterlidir.
+## 4) İlk giriş ve kullanıcılar
+1. Giriş ekranının altındaki **"E-posta ile giriş (ilk yönetici)"** bağlantısıyla şimdiki hesabınızla girin.
+2. **Kullanıcılar** sekmesinde kendi satırınızda **Düzenle** → kullanıcı adı ve PIN belirleyin → Kaydet.
+   Bundan sonra kullanıcı adı + PIN ile girebilirsiniz.
+3. Diğer personeli aynı sekmeden ekleyin (isim, kullanıcı adı, PIN, rol).
+   Kullanıcı adı: küçük harf (a-z), rakam, nokta, tire, alt çizgi; Türkçe karakter ve boşluk yok.
+
+## Hatırlatmalar
+- Uygulama içinde: Görevlerim ekranının üstünde "X görev gecikti / Y görev 2 saat içinde bitiyor" uyarısı çıkar.
+- E-posta: kullanıcıya isteğe bağlı "hatırlatma e-postası" girilirse her sabah 07:00'de özet gider (Resend gerekir).

@@ -39,3 +39,19 @@ label{display:block;font-size:13px;color:var(--mute);margin-bottom:3px}
 .days{display:flex;gap:10px;flex-wrap:wrap}
 .days label{display:flex;gap:4px;align-items:center;color:var(--ink);font-size:14px}
 @media (prefers-reduced-motion:no-preference){.task{transition:opacity .2s}}
+.alert{background:#fff3e6;border:1px solid #f0c9a0;color:var(--late);border-radius:6px;padding:10px 14px;margin-bottom:14px}
+.grp{margin-bottom:18px}
+.grph{display:flex;align-items:center;gap:8px;font-weight:600;margin:12px 0 6px}
+.dot{width:12px;height:12px;border-radius:50%;display:inline-block}
+.acts{display:flex;gap:6px;align-items:center;flex-shrink:0}
+.acts select.assign{max-width:130px;padding:6px 8px;font-size:13px}
+.btn.sm{padding:6px 10px;font-size:13px}
+.btn.danger{background:none;color:#b3261e;border:1px solid #e3b4b0}
+.modal{position:fixed;inset:0;background:rgba(14,27,51,.5);display:flex;align-items:flex-start;justify-content:center;padding:4vh 12px;overflow:auto;z-index:20}
+.mbox{background:var(--paper);border-radius:8px;padding:20px;width:100%;max-width:640px}
+.radios{display:flex;gap:16px;margin-bottom:8px}
+.radios label{display:flex;gap:6px;align-items:center;color:var(--ink);font-size:14px;margin:0}
+.inline{display:flex;gap:8px;align-items:center}
+.inline input[type=number]{width:80px}
+.sep{height:1px;background:var(--line);margin:14px 0}
+@media (max-width:600px){.task{flex-wrap:wrap}.acts{width:100%}}
