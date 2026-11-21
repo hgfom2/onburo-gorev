@@ -10,7 +10,7 @@ const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
 const REPEATS = { none: 'Tek seferlik', daily: 'Her gün', weekly: 'Haftanın belirli günleri', monthly_first: 'Her ayın ilk günü', monthly_last: 'Her ayın son günü' };
 const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir İlişkileri': '#e0a800' };
 const catColor = (catList, id) => CAT_COLORS[catList.find(c => c.id === id)?.name] || '#6b7280';
-const catColor = (catList, id) => { const i = catList.findIndex(c => c.id === id); return i < 0 ? '#6b7280' : PALETTE[i % PALETTE.length]; };
+const catColor = (catList, id) => { const i = catList.findIndex(c => c.id === id); return i < 0 ? '#6b7280' : PALETTE[i % PALETTE.length]; }; 
 const repeatText = t => t.recurrence === 'weekly' ? (t.weekdays || []).map(d => DAYS[d - 1]).join(', ') : REPEATS[t.recurrence];
 const byDue = (a, b) => (a.status === 'done') - (b.status === 'done') || new Date(a.due_at || 0) - new Date(b.due_at || 0);
 
