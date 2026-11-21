@@ -5,13 +5,13 @@ import { todayStr, addDays, monday, SHIFT_END, dateOf, fmtD, fmtDT, toLocalInput
 
 const SHIFTS = { A: 'A Vardiyası (08:00-16:00)', B: 'B Vardiyası (16:00-00:00)', C: 'C Vardiyası (00:00-08:00)' };
 const SHIFT_NAME = k => SHIFTS[k].split(' (')[0];
-const ROLES = { admin: 'Yönetici', supervisor: 'Supervisor', receptionist: 'Resepsiyonist' };
+const ROLES = { admin: 'Yönetici', supervisor: 'Süpervizör', receptionist: 'Resepsiyonist' };
 const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
 const REPEATS = { none: 'Tek seferlik', daily: 'Her gün', weekly: 'Haftanın belirli günleri', monthly_first: 'Her ayın ilk günü', monthly_last: 'Her ayın son günü' };
 const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir İlişkileri': '#e0a800' };
 const catColor = (catList, id) => CAT_COLORS[catList.find(c => c.id === id)?.name] || '#6b7280';
 const repeatText = t => t.recurrence === 'weekly' ? (t.weekdays || []).map(d => DAYS[d - 1]).join(', ') : REPEATS[t.recurrence];
-const byDue = (a, b) => (a.status === 'done') - (b.status === 'done') || new Date(a.due_at || 0) - new Date(b.due_at || 0);
+const byDue = (a, b) => (a.status !== 'open') - (b.status !== 'open') || new Date(a.due_at || 0) - new Date(b.due_at || 0);
 
 /* ---------- Giriş ---------- */
 function Login() {
@@ -53,27 +53,34 @@ function Login() {
 
 /* ---------- Görev kartı ve gruplar ---------- */
 function Task({ t, c, who }) {
+  const cancelled = t.status === 'cancelled';
   const late = t.status === 'open' && t.due_at && new Date(t.due_at) < new Date();
+  const mine = t.assignee === c.me.id; const n = c.noteCounts[t.id] || 0;
   return (
-    <div className={`task ${t.status === 'done' ? 'done' : ''} ${late ? 'late' : ''}`} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
-      <input type="checkbox" checked={t.status === 'done'} onChange={() => c.toggle(t)} aria-label="Tamamlandı" />
+    <div className={`task ${t.status === 'done' ? 'done' : ''} ${cancelled ? 'cancelled' : ''} ${late ? 'late' : ''}`} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
+      <input type="checkbox" checked={t.status === 'done'} disabled={cancelled} onChange={() => c.toggle(t)} aria-label="Tamamlandı" />
       <div style={{ flex: 1 }}>
         <div className="t">{t.title}</div>
         {t.description && <div className="meta">{t.description}</div>}
         <div className="meta">
           {SHIFT_NAME(t.shift)}{who && ` · ${c.names[t.assignee] || 'Atanmamış'}`} · Son: {t.due_at ? fmtDT(t.due_at) : fmtD(t.due_date)}
           {late && <span className="late-tag"> · Gecikti</span>}
+          {cancelled && <span className="late-tag"> · İptal edildi</span>}
         </div>
+        {cancelled && <div className="meta">İptal sebebi: {t.cancel_reason}{t.cancelled_by ? ` (${c.names[t.cancelled_by] || ''})` : ''}</div>}
       </div>
-      {c.isMgr && (
-        <div className="acts">
+      <div className="acts">
+        {c.isMgr && !cancelled && (
           <select className="assign" value="" onChange={e => c.assign(t, e.target.value)} aria-label="Ata">
             <option value="">{t.assignee ? 'Yeniden ata…' : 'Ata…'}</option>
             {c.people.filter(p => p.active).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}
           </select>
-          <button className="btn ghost sm" onClick={() => c.edit({ kind: 'task', data: t })}>Düzenle</button>
-        </div>
-      )}
+        )}
+        {c.isMgr && <button className="btn ghost sm" onClick={() => c.edit({ kind: 'task', data: t })}>Düzenle</button>}
+        {(c.isMgr || mine) && <button className="btn ghost sm" onClick={() => c.edit({ kind: 'notes', data: t })}>Notlar{n ? ` (${n})` : ''}</button>}
+        {(c.isMgr || mine) && t.status === 'open' && <button className="btn danger sm" onClick={() => c.edit({ kind: 'cancel', data: t })}>İptal</button>}
+        {c.isMgr && cancelled && <button className="btn ghost sm" onClick={() => c.reopen(t)}>Yeniden aç</button>}
+      </div>
     </div>
   );
 }
@@ -109,6 +116,7 @@ export default function App() {
   const [ver, setVer] = useState(0);
   const [editing, setEditing] = useState(null);
   const [unCount, setUnCount] = useState(0);
+  const [noteCounts, setNoteCounts] = useState({});
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -133,7 +141,19 @@ export default function App() {
     supabase.from('tasks').select('id', { count: 'exact', head: true }).is('assignee', null).eq('status', 'open').then(({ count }) => setUnCount(count || 0));
   }, [isMgr, ver]);
 
+  const ids = tasks.map(t => t.id).slice(0, 150).join(',');
+  useEffect(() => {
+    if (!ids) { setNoteCounts({}); return; }
+    supabase.from('task_notes').select('task_id').in('task_id', ids.split(',')).then(({ data }) => {
+      const m = {}; (data || []).forEach(r => { m[r.task_id] = (m[r.task_id] || 0) + 1; }); setNoteCounts(m);
+    });
+  }, [ids, ver]);
+
   const bump = () => setVer(v => v + 1);
+  const reopen = async t => {
+    const { error } = await supabase.from('tasks').update({ status: 'open', cancel_reason: null, cancelled_at: null, cancelled_by: null, completed_at: null }).eq('id', t.id);
+    if (!error) bump();
+  };
   const toggle = async t => {
     const done = t.status !== 'done';
     const { error } = await supabase.from('tasks').update({ status: done ? 'done' : 'open', completed_at: done ? new Date().toISOString() : null }).eq('id', t.id);
@@ -146,7 +166,7 @@ export default function App() {
   };
 
   const names = Object.fromEntries(people.map(p => [p.id, p.full_name || p.username || p.email]));
-  const c = { me, names, catList, people, isMgr, tasks, setTasks, toggle, assign, ver, bump, edit: setEditing, reloadPeople: loadPeople };
+  const c = { me, names, catList, people, isMgr, tasks, setTasks, toggle, assign, ver, bump, reopen, noteCounts, edit: setEditing, reloadPeople: loadPeople };
 
   if (session === undefined) return null;
   if (!session) return <Login />;
@@ -179,11 +199,17 @@ export default function App() {
       {editing && (
         <div className="modal" onClick={() => setEditing(null)}>
           <div className="mbox" onClick={e => e.stopPropagation()}>
-            <h2>{editing.kind === 'tpl' ? 'Tekrarlayan görevi düzenle' : editing.kind === 'preset' ? (editing.data.id ? 'Şablonu düzenle' : 'Yeni görev şablonu') : 'Görevi düzenle'}</h2>
-            {editing.kind === 'preset'
-              ? <PresetForm key={editing.data.id || 'new'} initial={editing.data} c={c} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />
-              : <TaskForm key={editing.data.id} mode={editing.kind === 'tpl' ? 'tpl-edit' : 'task-edit'} initial={editing.data} c={c}
-                  onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />}
+            {editing.kind === 'cancel' && <CancelForm t={editing.data} c={c} onCancel={() => setEditing(null)} onDone={() => { setEditing(null); bump(); }} />}
+            {editing.kind === 'notes' && <NotesPanel t={editing.data} c={c} onClose={() => setEditing(null)} />}
+            {editing.kind === 'preset' && (<>
+              <h2>{editing.data.id ? 'Şablonu düzenle' : 'Yeni görev şablonu'}</h2>
+              <PresetForm key={editing.data.id || 'new'} initial={editing.data} c={c} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />
+            </>)}
+            {(editing.kind === 'task' || editing.kind === 'tpl') && (<>
+              <h2>{editing.kind === 'tpl' ? 'Tekrarlayan görevi düzenle' : 'Görevi düzenle'}</h2>
+              <TaskForm key={editing.data.id} mode={editing.kind === 'tpl' ? 'tpl-edit' : 'task-edit'} initial={editing.data} c={c}
+                onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />
+            </>)}
           </div>
         </div>
       )}
@@ -231,7 +257,7 @@ function ShiftView({ c }) {
       <select value={shift} onChange={e => setShift(e.target.value)}>
         <option value="">Tüm vardiyalar</option>{Object.entries(SHIFTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
       </select>
-      <span className="meta">{day.filter(t => t.status === 'done').length} / {day.length} tamamlandı</span>
+      <span className="meta">{day.filter(t => t.status === 'done').length} / {day.filter(t => t.status !== 'cancelled').length} tamamlandı{day.some(t => t.status === 'cancelled') && ` · ${day.filter(t => t.status === 'cancelled').length} iptal`}</span>
     </div>
     {late.length > 0 && <><h3 style={{ color: 'var(--late)' }}>Geciken açık görevler ({late.length})</h3><ShiftGroups list={late} c={c} who /></>}
     {!day.length && <div className="empty">Bu gün için görev yok.</div>}
@@ -262,13 +288,13 @@ function Report({ c }) {
   })(); }, [lastMon, thisMon]);
   const stat = (id, from) => {
     const l = rows.filter(t => t.assignee === id && t.due_date >= from && t.due_date <= addDays(from, 6));
-    return { n: l.length, done: l.filter(t => t.status === 'done').length, late: l.filter(t => t.status === 'open' && t.due_date < today).length };
+    return { n: l.length, can: l.filter(t => t.status === 'cancelled').length, done: l.filter(t => t.status === 'done').length, late: l.filter(t => t.status === 'open' && t.due_date < today).length };
   };
   const Tbl = ({ from, title }) => (<>
     <h3>{title} ({fmtD(from)} – {fmtD(addDays(from, 6))})</h3>
-    <table><thead><tr><th>Personel</th><th className="n">Toplam</th><th className="n">Tamamlanan</th><th className="n">Açık</th><th className="n">Geciken</th></tr></thead>
+    <table><thead><tr><th>Personel</th><th className="n">Toplam</th><th className="n">Tamamlanan</th><th className="n">Açık</th><th className="n">İptal</th><th className="n">Geciken</th></tr></thead>
       <tbody>{c.people.filter(p => p.active).map(p => { const s = stat(p.id, from); return (
-        <tr key={p.id}><td>{p.full_name || p.username}</td><td className="n">{s.n}</td><td className="n">{s.done}</td><td className="n">{s.n - s.done}</td><td className="n">{s.late}</td></tr>); })}</tbody></table></>);
+        <tr key={p.id}><td>{p.full_name || p.username}</td><td className="n">{s.n}</td><td className="n">{s.done}</td><td className="n">{s.n - s.done - s.can}</td><td className="n">{s.can}</td><td className="n">{s.late}</td></tr>); })}</tbody></table></>);
   return (<><h2>Personel bazlı rapor</h2><Tbl from={thisMon} title="Bu hafta" /><Tbl from={lastMon} title="Geçen hafta" /></>);
 }
 
@@ -392,6 +418,65 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
         {mode === 'task-edit' && <button type="button" className="btn danger" style={{ marginLeft: 'auto' }} onClick={del}>Görevi sil</button>}
       </div>
     </form>
+  );
+}
+
+/* ---------- İptal ve notlar ---------- */
+function CancelForm({ t, c, onCancel, onDone }) {
+  const [reason, setReason] = useState(''); const [msg, setMsg] = useState('');
+  const save = async e => {
+    e.preventDefault();
+    if (reason.trim().length < 3) { setMsg('İptal sebebini yazın (en az 3 karakter).'); return; }
+    const { error } = await supabase.from('tasks').update({ status: 'cancelled', cancel_reason: reason.trim(), cancelled_at: new Date().toISOString(), cancelled_by: c.me.id }).eq('id', t.id);
+    if (error) setMsg('İptal edilemedi: ' + error.message); else onDone();
+  };
+  return (
+    <form className="card" onSubmit={save}>
+      <h2 style={{ marginTop: 0 }}>Görevi iptal et</h2>
+      <p className="meta">{t.title}</p>
+      <label>İptal sebebi (zorunlu)</label>
+      <textarea value={reason} onChange={e => setReason(e.target.value)} required autoFocus />
+      {msg && <div className="err">{msg}</div>}
+      <div className="inline" style={{ marginTop: 14 }}>
+        <button className="btn danger">Görevi iptal et</button>
+        <button type="button" className="btn ghost" onClick={onCancel}>Vazgeç</button>
+      </div>
+    </form>
+  );
+}
+
+function NotesPanel({ t, c, onClose }) {
+  const [notes, setNotes] = useState([]); const [body, setBody] = useState(''); const [msg, setMsg] = useState('');
+  const canAdd = c.isMgr || t.assignee === c.me.id;
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('task_notes').select('*').eq('task_id', t.id).order('created_at'); setNotes(data || []);
+  }, [t.id]);
+  useEffect(() => { load(); }, [load]);
+  const add = async e => {
+    e.preventDefault(); if (!body.trim()) return;
+    const { error } = await supabase.from('task_notes').insert({ task_id: t.id, author: c.me.id, body: body.trim() });
+    if (error) setMsg('Not eklenemedi: ' + error.message); else { setBody(''); setMsg(''); load(); c.bump(); }
+  };
+  return (
+    <div className="card">
+      <h2 style={{ marginTop: 0 }}>Notlar</h2>
+      <p className="meta">{t.title}</p>
+      {!notes.length && <div className="empty" style={{ padding: '8px 0' }}>Henüz not yok.</div>}
+      {notes.map(n => (
+        <div className="note" key={n.id}>
+          <div className="meta"><b>{c.names[n.author] || 'Kullanıcı'}</b> · {fmtDT(n.created_at)}</div>
+          <div style={{ whiteSpace: 'pre-wrap' }}>{n.body}</div>
+        </div>))}
+      {canAdd && (
+        <form onSubmit={add} style={{ marginTop: 12 }}>
+          <label>Yeni not</label>
+          <textarea value={body} onChange={e => setBody(e.target.value)} />
+          {msg && <div className="err">{msg}</div>}
+          <div className="inline" style={{ marginTop: 10 }}><button className="btn">Not ekle</button></div>
+        </form>
+      )}
+      <div style={{ marginTop: 12 }}><button type="button" className="btn ghost" onClick={onClose}>Kapat</button></div>
+    </div>
   );
 }
 
