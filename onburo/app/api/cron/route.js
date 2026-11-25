@@ -3,8 +3,11 @@ import { todayStr, occursOn, dueFor, fmtDT } from '../../../lib/util';
 
 export const dynamic = 'force-dynamic';
 
+const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
 export async function GET(req) {
-  if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`)
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.headers.get('authorization') !== `Bearer ${secret}`)
     return new Response('Yetkisiz', { status: 401 });
 
   const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -27,12 +30,12 @@ export async function GET(req) {
     for (const u of users || []) {
       const mine = (open || []).filter(t => t.assignee === u.id);
       if (!mine.length || !u.notify_email) continue;
-      const lines = mine.map(t => `<li>${t.title} (${t.shift} Vardiyası · son: ${fmtDT(t.due_at)}${t.due_date < today ? ' · <b>gecikmiş</b>' : ''})</li>`).join('');
+      const lines = mine.map(t => `<li>${esc(t.title)} (${t.shift} Vardiyası · son: ${fmtDT(t.due_at)}${t.due_date < today ? ' · <b>gecikmiş</b>' : ''})</li>`).join('');
       const r = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: process.env.MAIL_FROM, to: u.notify_email, subject: `Bugünkü görevleriniz (${mine.length})`,
-          html: `<p>Merhaba ${u.full_name},</p><ul>${lines}</ul><p><a href="${process.env.APP_URL}">Uygulamayı aç</a></p>` })
+          html: `<p>Merhaba ${esc(u.full_name)},</p><ul>${lines}</ul><p><a href="${process.env.APP_URL}">Uygulamayı aç</a></p>` })
       });
       if (r.ok) sent++;
     }
