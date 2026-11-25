@@ -4,7 +4,8 @@ import { todayStr, occursOn, dueFor, fmtDT } from '../../../lib/util';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req) {
-  if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`)
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.headers.get('authorization') !== `Bearer ${secret}`)
     return new Response('Yetkisiz', { status: 401 });
 
   const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
