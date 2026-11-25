@@ -47,7 +47,7 @@ export async function PATCH(req) {
   const upd = {}; const auth = {};
   if (b.full_name !== undefined) upd.full_name = String(b.full_name).trim();
   if (b.role) { if (!ROLES.includes(b.role)) return bad('Geçersiz rol.'); upd.role = b.role; }
-  if (b.active !== undefined) upd.active = !!b.active;
+  if (b.active !== undefined) { upd.active = !!b.active; auth.ban_duration = b.active ? 'none' : '876000h'; }
   if (b.notify_email !== undefined) upd.notify_email = b.notify_email || null;
   if (b.username) {
     const u = String(b.username).trim().toLowerCase();
