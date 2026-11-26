@@ -2,13 +2,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { todayStr, addDays, monday, SHIFT_END, dateOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor } from '../lib/util';
+import { TASK_SELECT, itemsOf, ItemsList, ItemsEditor, CashInfo, CashForm } from './checklist';
 
 const SHIFTS = { A: 'A Vardiyası (08:00-16:00)', B: 'B Vardiyası (16:00-00:00)', C: 'C Vardiyası (00:00-08:00)' };
 const SHIFT_NAME = k => SHIFTS[k].split(' (')[0];
 const ROLES = { admin: 'Yönetici', supervisor: 'Süpervizör', receptionist: 'Resepsiyonist' };
 const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
 const REPEATS = { none: 'Tek seferlik', daily: 'Her gün', weekly: 'Haftanın belirli günleri', monthly_first: 'Her ayın ilk günü', monthly_last: 'Her ayın son günü' };
-const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir İlişkileri': '#e0a800' };
+const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir İlişkileri': '#e0a800', 'Checklist': '#2e7d32', 'Yönetim': '#6a1b9a' };
+const KINDS = { normal: 'Normal görev', cash_handover: 'Kasa devri' };
+const isChecklist = (c, t) => c.catList.find(k => k.id === t.category_id)?.name === 'Checklist';
 const catColor = (catList, id) => CAT_COLORS[catList.find(c => c.id === id)?.name] || '#6b7280';
 const repeatText = t => t.recurrence === 'weekly' ? (t.weekdays || []).map(d => DAYS[d - 1]).join(', ') : REPEATS[t.recurrence];
 const byDue = (a, b) => (a.status !== 'open') - (b.status !== 'open') || new Date(a.due_at || 0) - new Date(b.due_at || 0);
@@ -95,18 +98,23 @@ function Task({ t, c, who }) {
   const cancelled = t.status === 'cancelled';
   const late = t.status === 'open' && t.due_at && new Date(t.due_at) < new Date();
   const mine = t.assignee === c.me.id; const n = c.noteCounts[t.id] || 0;
+  const cash = t.kind === 'cash_handover'; const hasItems = itemsOf(t).length > 0;
+  const fresh = !t.template_id && t.status === 'open';
+  const onCheck = () => (cash && t.status !== 'done' ? c.edit({ kind: 'cash', data: t }) : c.toggle(t, c.patch));
   return (
-    <div className={`task ${t.status === 'done' ? 'done' : ''} ${cancelled ? 'cancelled' : ''} ${late ? 'late' : ''}`} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
-      <input type="checkbox" checked={t.status === 'done'} disabled={cancelled} onChange={() => c.toggle(t, c.patch)} aria-label="Tamamlandı" />
+    <div className={`task ${t.status === 'done' ? 'done' : ''} ${cancelled ? 'cancelled' : ''} ${late ? 'late' : ''} ${fresh ? 'fresh' : ''}`} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
+      <input type="checkbox" checked={t.status === 'done'} disabled={cancelled} onChange={onCheck} aria-label="Tamamlandı" />
       <div style={{ flex: 1 }}>
-        <div className="t">{t.title}</div>
+        <div className="t">{t.title}{cash && <span className="kindtag">Kasa devri</span>}</div>
         {t.description && <div className="meta">{t.description}</div>}
         <div className="meta">
-          {SHIFT_NAME(t.shift)}{who && ` · ${c.names[t.assignee] || 'Atanmamış'}`} · Son: {t.due_at ? fmtDT(t.due_at) : fmtD(t.due_date)}
+          {SHIFT_NAME(t.shift)}{who && (t.assignee || !hasItems) && ` · ${c.names[t.assignee] || 'Atanmamış'}`} · Son: {t.due_at ? fmtDT(t.due_at) : fmtD(t.due_date)}
           {late && <span className="late-tag"> · Gecikti</span>}
           {cancelled && <span className="late-tag"> · İptal edildi</span>}
         </div>
         {cancelled && <div className="meta">İptal sebebi: {t.cancel_reason}{t.cancelled_by ? ` (${c.names[t.cancelled_by] || ''})` : ''}</div>}
+        <ItemsList t={t} c={c} />
+        {cash && <CashInfo t={t} c={c} />}
       </div>
       <div className="acts">
         {c.isMgr && !cancelled && (
@@ -116,7 +124,7 @@ function Task({ t, c, who }) {
           </select>
         )}
         {c.isMgr && <button className="btn ghost sm" onClick={() => c.edit({ kind: 'task', data: t })}>Düzenle</button>}
-        {(c.isMgr || mine) && <button className="btn ghost sm" onClick={() => c.edit({ kind: 'notes', data: t })}>Notlar{n ? ` (${n})` : ''}</button>}
+        <button className="btn ghost sm" onClick={() => c.edit({ kind: 'notes', data: t })}>Notlar{n ? ` (${n})` : ''}</button>
         {(c.isMgr || mine) && t.status === 'open' && <button className="btn danger sm" onClick={() => c.edit({ kind: 'cancel', data: t })}>İptal</button>}
         {c.isMgr && cancelled && <button className="btn ghost sm" onClick={() => c.reopen(t)}>Yeniden aç</button>}
       </div>
@@ -136,10 +144,28 @@ function ByCategory({ list, c, who }) {
   ));
 }
 
+/* Sıra: şablondan üretilmeyen (yeni) görevler en üstte, Checklist kategorisi en altta */
+function Sections({ list, c, who }) {
+  const fresh = list.filter(t => !t.template_id);
+  const rest = list.filter(t => t.template_id);
+  const other = rest.filter(t => !isChecklist(c, t));
+  const chk = rest.filter(t => isChecklist(c, t));
+  return (<>
+    {fresh.length > 0 && (
+      <div className="grp fresh-grp">
+        <div className="grph"><span className="newtag">Yeni</span>Yeni görevler <span className="meta">({fresh.length})</span></div>
+        {[...fresh].sort(byDue).map(t => <Task key={t.id} t={t} c={c} who={who} />)}
+      </div>
+    )}
+    <ByCategory list={other} c={c} who={who} />
+    <ByCategory list={chk} c={c} who={who} />
+  </>);
+}
+
 function ShiftGroups({ list, c, who }) {
   return Object.keys(SHIFTS).map(s => {
     const l = list.filter(t => t.shift === s);
-    return l.length > 0 && <div key={s}><h3>{SHIFTS[s]}</h3><ByCategory list={l} c={c} who={who} /></div>;
+    return l.length > 0 && <div key={s}><h3>{SHIFTS[s]}</h3><Sections list={l} c={c} who={who} /></div>;
   });
 }
 
@@ -175,7 +201,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isMgr) return;
-    supabase.from('tasks').select('id', { count: 'exact', head: true }).is('assignee', null).eq('status', 'open').then(({ count }) => setUnCount(count || 0));
+    // Alt maddeleri olan checklist görevlerinin ana görevi atamasızdır; onlar "atanmamış" sayılmaz
+    supabase.from('tasks').select('id, task_items(id)').is('assignee', null).eq('status', 'open')
+      .then(({ data }) => setUnCount((data || []).filter(t => !(t.task_items || []).length).length));
   }, [isMgr, ver]);
 
   // Canlı yenileme: başkasının değişikliği (görev/not) gelince ekranlar yeniden yüklenir
@@ -186,6 +214,8 @@ export default function App() {
     const ch = supabase.channel('live-tasks')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, kick)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'task_notes' }, kick)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_items' }, kick)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cash_handovers' }, kick)
       .subscribe();
     const onVis = () => { if (document.visibilityState === 'visible') kick(); };
     document.addEventListener('visibilitychange', onVis);
@@ -221,8 +251,8 @@ export default function App() {
       <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>
   );
 
-  const tabs = [['mine', 'Görevlerim'],
-    ...(isMgr ? [['shift', 'Vardiya / Gün'], ['un', `Atanmamış${unCount ? ` (${unCount})` : ''}`], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : []),
+  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'],
+    ...(isMgr ? [['un', `Atanmamış${unCount ? ` (${unCount})` : ''}`], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : []),
     ...(isAdmin ? [['users', 'Kullanıcılar']] : [])];
   const go = k => setTab(k);
 
@@ -235,7 +265,7 @@ export default function App() {
       <nav role="tablist">{tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} onClick={() => go(k)}>{l}</button>)}</nav>
       <main>
         {tab === 'mine' && <Mine c={c} />}
-        {tab === 'shift' && isMgr && <ShiftView c={c} />}
+        {tab === 'shift' && <ShiftView c={c} />}
         {tab === 'un' && isMgr && <Unassigned c={c} />}
         {tab === 'report' && isMgr && <Report c={c} />}
         {tab === 'manage' && isMgr && <Manage c={c} />}
@@ -246,6 +276,7 @@ export default function App() {
           <div className="mbox" onClick={e => e.stopPropagation()}>
             {editing.kind === 'cancel' && <CancelForm t={editing.data} c={c} onCancel={() => setEditing(null)} onDone={() => { setEditing(null); bump(); }} />}
             {editing.kind === 'notes' && <NotesPanel t={editing.data} c={c} onClose={() => setEditing(null)} />}
+            {editing.kind === 'cash' && <CashForm t={editing.data} c={c} onCancel={() => setEditing(null)} onDone={() => { setEditing(null); bump(); }} />}
             {editing.kind === 'preset' && (<>
               <h2>{editing.data.id ? 'Şablonu düzenle' : 'Yeni görev şablonu'}</h2>
               <PresetForm key={editing.data.id || 'new'} initial={editing.data} c={c} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); bump(); }} />
@@ -265,8 +296,21 @@ export default function App() {
 /* ---------- Ekranlar ---------- */
 function Mine({ c: base }) {
   const { me } = base; const today = todayStr();
-  const [tasks, c] = useTaskScreen(base, () => fetchAll(() => supabase.from('tasks').select('*').eq('assignee', me.id)
-    .or(`status.eq.open,due_date.gte.${addDays(today, -1)}`).lte('due_date', addDays(today, 7))), [me.id, today]);
+  const [tasks, c] = useTaskScreen(base, async () => {
+    const win = q => q.or(`status.eq.open,due_date.gte.${addDays(today, -1)}`).lte('due_date', addDays(today, 7));
+    const own = await fetchAll(() => win(supabase.from('tasks').select(TASK_SELECT).eq('assignee', me.id)));
+    // Ana görev bana atanmamış olsa bile, bana atanmış alt maddesi olan görevler de gelir
+    const { data: its } = await supabase.from('task_items').select('task_id, tasks!inner(due_date)').eq('assignee', me.id)
+      .gte('tasks.due_date', addDays(today, -60)).lte('tasks.due_date', addDays(today, 7));
+    const have = new Set(own.map(t => t.id));
+    const extra = [...new Set((its || []).map(r => r.task_id))].filter(id => !have.has(id));
+    let more = [];
+    for (let i = 0; i < extra.length; i += 100) {
+      const ids = extra.slice(i, i + 100);
+      more = more.concat(await fetchAll(() => win(supabase.from('tasks').select(TASK_SELECT).in('id', ids))));
+    }
+    return [...own, ...more];
+  }, [me.id, today]);
   const now = new Date(); const open = tasks.filter(t => t.status === 'open' && t.due_at);
   const late = open.filter(t => new Date(t.due_at) < now).length;
   const soon = open.filter(t => new Date(t.due_at) >= now && new Date(t.due_at) < new Date(now.getTime() + 2 * 3600e3)).length;
@@ -274,7 +318,7 @@ function Mine({ c: base }) {
     <h2>Görevlerim</h2>
     {(late > 0 || soon > 0) && <div className="alert">{late > 0 && <b>{late} görev gecikti</b>}{late > 0 && soon > 0 && ' · '}{soon > 0 && <span>{soon} görev 2 saat içinde bitiyor</span>}</div>}
     {!tasks.length && <div className="empty">Size atanmış görev yok.</div>}
-    <ByCategory list={tasks} c={c} />
+    <Sections list={tasks} c={c} />
   </>);
 }
 
@@ -282,8 +326,8 @@ function ShiftView({ c: base }) {
   const today = todayStr();
   const [date, setDate] = useState(today); const [shift, setShift] = useState('');
   const [tasks, c] = useTaskScreen(base, async () => {
-    const q1 = fetchAll(() => { let q = supabase.from('tasks').select('*').eq('due_date', date); if (shift) q = q.eq('shift', shift); return q; });
-    const q2 = date === today ? fetchAll(() => { let q = supabase.from('tasks').select('*').eq('status', 'open').lt('due_date', today); if (shift) q = q.eq('shift', shift); return q; }) : Promise.resolve([]);
+    const q1 = fetchAll(() => { let q = supabase.from('tasks').select(TASK_SELECT).eq('due_date', date); if (shift) q = q.eq('shift', shift); return q; });
+    const q2 = date === today ? fetchAll(() => { let q = supabase.from('tasks').select(TASK_SELECT).eq('status', 'open').lt('due_date', today); if (shift) q = q.eq('shift', shift); return q; }) : Promise.resolve([]);
     const [a, b] = await Promise.all([q1, q2]); return [...a, ...b];
   }, [date, shift, today]);
   const day = tasks.filter(t => t.due_date === date);
@@ -304,7 +348,8 @@ function ShiftView({ c: base }) {
 }
 
 function Unassigned({ c: base }) {
-  const [tasks, c] = useTaskScreen(base, async () => (await fetchAll(() => supabase.from('tasks').select('*').is('assignee', null).eq('status', 'open'))).sort(byDue), []);
+  const [tasks, c] = useTaskScreen(base, async () => (await fetchAll(() => supabase.from('tasks').select(TASK_SELECT).is('assignee', null).eq('status', 'open')))
+    .filter(t => !itemsOf(t).length).sort(byDue), []);
   return (<>
     <h2>Atanmamış görevler</h2>
     <p className="meta">Sağdaki "Ata…" listesinden kişiyi seçtiğiniz anda görev o kişiye atanır.</p>
@@ -366,7 +411,7 @@ function Manage({ c }) {
     {!tpls.length && <div className="empty">Tekrarlayan görev yok.</div>}
     {tpls.map(t => (
       <div className="task" key={t.id} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
-        <div style={{ flex: 1 }}><div className="t">{t.title}</div>
+        <div style={{ flex: 1 }}><div className="t">{t.title}{t.kind === 'cash_handover' && <span className="kindtag">Kasa devri</span>}</div>
           <div className="meta">{SHIFT_NAME(t.shift)} · {repeatText(t)} · Son saat: {(t.due_time || SHIFT_END[t.shift]).slice(0, 5)} · {c.names[t.assignee] || 'Atanmamış'}</div></div>
         <div className="acts">
           <button className="btn ghost sm" onClick={() => c.edit({ kind: 'tpl', data: t })}>Düzenle</button>
@@ -383,24 +428,42 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
     title: i.title || '', description: i.description || '', category_id: i.category_id ?? (c.catList[0]?.id || ''),
     shift: i.shift || 'A', assignee: i.assignee || '',
     dmode: i.dmode || 'exact', due_local: i.due_at ? toLocalInput(i.due_at) : `${todayStr()}T18:00`, rel_n: i.rel_n || 2, rel_unit: i.rel_unit || 'saat',
-    repeat: isTpl ? i.recurrence : 'none', weekdays: i.weekdays || [1, 2, 3, 4, 5, 6, 7], due_time: (i.due_time || '').slice(0, 5)
+    repeat: isTpl ? i.recurrence : 'none', weekdays: i.weekdays || [1, 2, 3, 4, 5, 6, 7], due_time: (i.due_time || '').slice(0, 5),
+    kind: i.kind || 'normal'
   });
   const [msg, setMsg] = useState('');
+  const [items, setItems] = useState([]); // şablonun alt maddeleri
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
   const recurring = isTpl || (isNew && f.repeat !== 'none');
+  const mgrOnly = !!c.catList.find(k => String(k.id) === String(f.category_id))?.mgr_only;
+  const isRec = id => c.people.find(p => p.id === id)?.role === 'receptionist';
+  useEffect(() => {
+    if (!isTpl) return;
+    supabase.from('template_items').select('label,assignee,sort').eq('template_id', i.id).order('sort')
+      .then(({ data }) => setItems((data || []).map(x => ({ label: x.label, assignee: x.assignee || '' }))));
+  }, [isTpl, i.id]);
 
   const save = async e => {
     e.preventDefault(); setMsg('');
-    const base = { title: f.title.trim(), description: f.description || null, category_id: f.category_id || null, shift: f.shift, assignee: f.assignee || null };
+    const base = { title: f.title.trim(), description: f.description || null, category_id: f.category_id || null, shift: f.shift, assignee: f.assignee || null, kind: f.kind };
     const wd = f.repeat === 'weekly' ? f.weekdays : [1, 2, 3, 4, 5, 6, 7];
     if (f.repeat === 'weekly' && !wd.length) { setMsg('En az bir gün seçin.'); return; }
+    const clean = recurring && f.kind === 'normal' ? items.filter(x => x.label.trim()).map((x, n) => ({ label: x.label.trim(), assignee: x.assignee || null, sort: n })) : [];
+    if (mgrOnly && (isRec(f.assignee) || clean.some(x => isRec(x.assignee)))) { setMsg('Yönetim kategorisindeki görevler resepsiyonistlere atanamaz.'); return; }
+    const syncItems = async tid => {
+      const d = await supabase.from('template_items').delete().eq('template_id', tid);
+      if (d.error || !clean.length) return d.error;
+      return (await supabase.from('template_items').insert(clean.map(x => ({ ...x, template_id: tid })))).error;
+    };
     let error;
     if (isTpl) {
       ({ error } = await supabase.from('templates').update({ ...base, recurrence: f.repeat, weekdays: wd, due_time: f.due_time || null }).eq('id', i.id));
+      if (!error) error = await syncItems(i.id);
     } else if (recurring) {
       const { data, error: e1 } = await supabase.from('templates').insert({ ...base, recurrence: f.repeat, weekdays: wd, due_time: f.due_time || null }).select().single();
       error = e1; const today = todayStr();
-      if (!e1 && occursOn(data, today)) await supabase.from('tasks').insert({ ...base, due_date: today, due_at: dueFor(data, today), template_id: data.id });
+      if (!e1) error = await syncItems(data.id); // önce maddeler: bugünün görevi eklenince tetikleyici bunları kopyalar
+      if (!error && occursOn(data, today)) error = (await supabase.from('tasks').insert({ ...base, due_date: today, due_at: dueFor(data, today), template_id: data.id })).error;
     } else {
       let due_at;
       if (f.dmode === 'exact') { if (!f.due_local) { setMsg('Tarih ve saat girin.'); return; } due_at = `${f.due_local}:00+03:00`; }
@@ -425,12 +488,15 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
       <div style={{ marginBottom: 12 }}><label>Görev başlığı</label><input style={{ width: '100%' }} value={f.title} onChange={e => set('title', e.target.value)} required /></div>
       <div style={{ marginBottom: 12 }}><label>Açıklama</label><textarea value={f.description} onChange={e => set('description', e.target.value)} /></div>
       <div className="grid">
-        <div><label>Kategori</label><select value={f.category_id} onChange={e => set('category_id', e.target.value)}>{c.catList.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></div>
+        <div><label>Kategori</label><select value={f.category_id} onChange={e => set('category_id', e.target.value)}>{c.catList.map(k => <option key={k.id} value={k.id}>{k.name}{k.mgr_only ? ' (yalnızca yönetim)' : ''}</option>)}</select></div>
         <div><label>Vardiya</label><select value={f.shift} onChange={e => set('shift', e.target.value)}>{Object.entries(SHIFTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
-        <div><label>Sorumlu</label><select value={f.assignee} onChange={e => set('assignee', e.target.value)}><option value="">Atanmamış</option>{c.people.filter(p => p.active).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}</select></div>
+        <div><label>Sorumlu</label><select value={f.assignee} onChange={e => set('assignee', e.target.value)}><option value="">Atanmamış</option>{c.people.filter(p => p.active && !(mgrOnly && p.role === 'receptionist')).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}</select></div>
+        {(isNew || isTpl) && <div><label>Tür</label><select value={f.kind} onChange={e => set('kind', e.target.value)}>{Object.entries(KINDS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>}
         {(isNew || isTpl) && <div><label>Tekrar</label><select value={f.repeat} onChange={e => set('repeat', e.target.value)}>{Object.entries(REPEATS).filter(([k]) => !(isTpl && k === 'none')).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>}
       </div>
       {f.repeat === 'weekly' && <div className="days" style={{ marginTop: 12 }}>{DAYS.map((d, n) => <label key={d}><input type="checkbox" checked={f.weekdays.includes(n + 1)} onChange={e => set('weekdays', e.target.checked ? [...f.weekdays, n + 1] : f.weekdays.filter(x => x !== n + 1))} />{d}</label>)}</div>}
+      {f.kind === 'cash_handover' && <p className="meta" style={{ marginBottom: 0 }}>Kasa devri: tamamlarken kasayı devreden, kasayı alan ve kasa raporu fotoğrafı zorunludur.</p>}
+      {recurring && f.kind === 'normal' && <ItemsEditor items={items} setItems={setItems} people={c.people} mgrOnly={mgrOnly} />}
       <div className="sep" />
       {recurring ? (
         <div><label>Son saat (boş bırakılırsa vardiya sonu: {SHIFT_END[f.shift]})</label><input type="time" value={f.due_time} onChange={e => set('due_time', e.target.value)} /></div>

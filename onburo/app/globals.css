@@ -59,3 +59,14 @@ label{display:block;font-size:13px;color:var(--mute);margin-bottom:3px}
 .task.cancelled .t{text-decoration:line-through}
 .note{border-bottom:1px solid var(--line);padding:8px 0}
 .note:last-child{border-bottom:0}
+.task.fresh{background:#fff8e1;border-color:#f0d98a}
+.grp.fresh-grp .grph{color:#8a5a00}
+.newtag{background:#e0a800;color:#fff;border-radius:4px;padding:1px 7px;font-size:12px;font-weight:600}
+.kindtag{background:#eef2f9;color:var(--sap);border-radius:4px;padding:1px 7px;font-size:12px;font-weight:600;margin-left:6px}
+.items{margin-top:8px;border-top:1px dashed var(--line);padding-top:6px}
+.item{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0}
+.item label{display:flex;gap:8px;align-items:center;color:var(--ink);font-size:14px;margin:0}
+.item.done label{text-decoration:line-through;color:var(--mute)}
+.item.mine label{font-weight:600}
+.item .assign{max-width:150px;padding:4px 6px;font-size:13px}
+.task .item input{margin-top:0;width:16px;height:16px}
