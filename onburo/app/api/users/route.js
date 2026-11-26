@@ -19,6 +19,14 @@ async function adminId(req, sb) {
   return { id: data.user.id };
 }
 
+// Yalnızca yönetici: iletişim alanları (e-posta, hatırlatma e-postası) istemciye doğrudan açık değildir
+export async function GET(req) {
+  const sb = db(); const g = await adminId(req, sb); if (!g.id) return bad(g.err, 403);
+  const { data, error } = await sb.from('profiles').select('id,email,notify_email');
+  if (error) return bad(error.message, 500);
+  return Response.json({ contacts: data });
+}
+
 export async function POST(req) {
   const pepper = process.env.PIN_PEPPER; if (!pepper) return bad('Sunucu ayarı eksik (PIN_PEPPER).', 500);
   const sb = db(); const g = await adminId(req, sb); if (!g.id) return bad(g.err, 403);

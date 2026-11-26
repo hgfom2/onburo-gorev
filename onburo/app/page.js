@@ -13,6 +13,45 @@ const catColor = (catList, id) => CAT_COLORS[catList.find(c => c.id === id)?.nam
 const repeatText = t => t.recurrence === 'weekly' ? (t.weekdays || []).map(d => DAYS[d - 1]).join(', ') : REPEATS[t.recurrence];
 const byDue = (a, b) => (a.status !== 'open') - (b.status !== 'open') || new Date(a.due_at || 0) - new Date(b.due_at || 0);
 
+/* Supabase tek istekte en fazla 1000 satır döndürür; sayfa sayfa hepsini al */
+const PAGE = 1000;
+async function fetchAll(make) {
+  let all = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await make().order('id').range(from, from + PAGE - 1);
+    if (error || !data) break;
+    all = all.concat(data);
+    if (data.length < PAGE) break;
+  }
+  return all;
+}
+
+/* Her ekran kendi görev listesini ve not sayılarını tutar (ortak state yok, eski cevaplar yok sayılır) */
+function useTaskScreen(base, load, deps) {
+  const [tasks, setTasks] = useState([]);
+  const [noteCounts, setNoteCounts] = useState({});
+  useEffect(() => {
+    let live = true;
+    load().then(d => { if (live) setTasks(d); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base.ver, ...deps]);
+  const ids = tasks.map(t => t.id).join(',');
+  useEffect(() => {
+    if (!ids) { setNoteCounts({}); return; }
+    let live = true;
+    const list = ids.split(','); const chunks = [];
+    for (let i = 0; i < list.length; i += 100) chunks.push(list.slice(i, i + 100));
+    Promise.all(chunks.map(ch => supabase.from('task_notes').select('task_id').in('task_id', ch))).then(rs => {
+      if (!live) return;
+      const m = {}; rs.forEach(r => (r.data || []).forEach(x => { m[x.task_id] = (m[x.task_id] || 0) + 1; })); setNoteCounts(m);
+    });
+    return () => { live = false; };
+  }, [ids, base.ver]);
+  const patch = (id, f) => setTasks(ts => ts.map(x => x.id === id ? { ...x, ...f } : x));
+  return [tasks, { ...base, noteCounts, patch }];
+}
+
 /* ---------- Giriş ---------- */
 function Login() {
   const [mode, setMode] = useState('pin');
@@ -58,7 +97,7 @@ function Task({ t, c, who }) {
   const mine = t.assignee === c.me.id; const n = c.noteCounts[t.id] || 0;
   return (
     <div className={`task ${t.status === 'done' ? 'done' : ''} ${cancelled ? 'cancelled' : ''} ${late ? 'late' : ''}`} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
-      <input type="checkbox" checked={t.status === 'done'} disabled={cancelled} onChange={() => c.toggle(t)} aria-label="Tamamlandı" />
+      <input type="checkbox" checked={t.status === 'done'} disabled={cancelled} onChange={() => c.toggle(t, c.patch)} aria-label="Tamamlandı" />
       <div style={{ flex: 1 }}>
         <div className="t">{t.title}</div>
         {t.description && <div className="meta">{t.description}</div>}
@@ -71,7 +110,7 @@ function Task({ t, c, who }) {
       </div>
       <div className="acts">
         {c.isMgr && !cancelled && (
-          <select className="assign" value="" onChange={e => c.assign(t, e.target.value)} aria-label="Ata">
+          <select className="assign" value="" onChange={e => c.assign(t, e.target.value, c.patch)} aria-label="Ata">
             <option value="">{t.assignee ? 'Yeniden ata…' : 'Ata…'}</option>
             {c.people.filter(p => p.active).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}
           </select>
@@ -111,12 +150,10 @@ export default function App() {
   const [tab, setTab] = useState('mine');
   const [people, setPeople] = useState([]);
   const [catList, setCatList] = useState([]);
-  const [tasks, setTasks] = useState([]);
   const [loadErr, setLoadErr] = useState('');
   const [ver, setVer] = useState(0);
   const [editing, setEditing] = useState(null);
   const [unCount, setUnCount] = useState(0);
-  const [noteCounts, setNoteCounts] = useState({});
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -126,7 +163,7 @@ export default function App() {
 
   const loadPeople = useCallback(async () => {
     if (!session) return;
-    const [p, k] = await Promise.all([supabase.from('profiles').select('*').order('full_name'), supabase.from('categories').select('*').order('id')]);
+    const [p, k] = await Promise.all([supabase.from('profiles').select('id,full_name,username,role,active').order('full_name'), supabase.from('categories').select('*').order('id')]);
     if (p.error) { setLoadErr(p.error.message); return; }
     setPeople(p.data || []); setCatList(k.data || []);
     setMe((p.data || []).find(x => x.id === session.user.id) || null);
@@ -141,32 +178,40 @@ export default function App() {
     supabase.from('tasks').select('id', { count: 'exact', head: true }).is('assignee', null).eq('status', 'open').then(({ count }) => setUnCount(count || 0));
   }, [isMgr, ver]);
 
-  const ids = tasks.map(t => t.id).slice(0, 150).join(',');
+  // Canlı yenileme: başkasının değişikliği (görev/not) gelince ekranlar yeniden yüklenir
   useEffect(() => {
-    if (!ids) { setNoteCounts({}); return; }
-    supabase.from('task_notes').select('task_id').in('task_id', ids.split(',')).then(({ data }) => {
-      const m = {}; (data || []).forEach(r => { m[r.task_id] = (m[r.task_id] || 0) + 1; }); setNoteCounts(m);
-    });
-  }, [ids, ver]);
+    if (!session) return;
+    let timer;
+    const kick = () => { clearTimeout(timer); timer = setTimeout(() => setVer(v => v + 1), 800); };
+    const ch = supabase.channel('live-tasks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, kick)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_notes' }, kick)
+      .subscribe();
+    const onVis = () => { if (document.visibilityState === 'visible') kick(); };
+    document.addEventListener('visibilitychange', onVis);
+    const poll = setInterval(kick, 5 * 60e3); // bağlantı koparsa yedek
+    return () => { clearTimeout(timer); clearInterval(poll); document.removeEventListener('visibilitychange', onVis); supabase.removeChannel(ch); };
+  }, [session]);
 
   const bump = () => setVer(v => v + 1);
   const reopen = async t => {
     const { error } = await supabase.from('tasks').update({ status: 'open', cancel_reason: null, cancelled_at: null, cancelled_by: null, completed_at: null }).eq('id', t.id);
     if (!error) bump();
   };
-  const toggle = async t => {
+  const toggle = async (t, patch) => {
     const done = t.status !== 'done';
-    const { error } = await supabase.from('tasks').update({ status: done ? 'done' : 'open', completed_at: done ? new Date().toISOString() : null }).eq('id', t.id);
-    if (!error) setTasks(ts => ts.map(x => x.id === t.id ? { ...x, status: done ? 'done' : 'open' } : x));
+    const f = { status: done ? 'done' : 'open', completed_at: done ? new Date().toISOString() : null };
+    const { error } = await supabase.from('tasks').update(f).eq('id', t.id);
+    if (!error) patch(t.id, f);
   };
-  const assign = async (t, uid) => {
+  const assign = async (t, uid, patch) => {
     if (!uid) return;
     const { error } = await supabase.from('tasks').update({ assignee: uid }).eq('id', t.id);
-    if (!error) { setTasks(ts => ts.map(x => x.id === t.id ? { ...x, assignee: uid } : x)); bump(); }
+    if (!error) { patch(t.id, { assignee: uid }); bump(); }
   };
 
   const names = Object.fromEntries(people.map(p => [p.id, p.full_name || p.username || p.email]));
-  const c = { me, names, catList, people, isMgr, tasks, setTasks, toggle, assign, ver, bump, reopen, noteCounts, edit: setEditing, reloadPeople: loadPeople };
+  const c = { me, names, catList, people, isMgr, toggle, assign, ver, bump, reopen, edit: setEditing, reloadPeople: loadPeople };
 
   if (session === undefined) return null;
   if (!session) return <Login />;
@@ -179,7 +224,7 @@ export default function App() {
   const tabs = [['mine', 'Görevlerim'],
     ...(isMgr ? [['shift', 'Vardiya / Gün'], ['un', `Atanmamış${unCount ? ` (${unCount})` : ''}`], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : []),
     ...(isAdmin ? [['users', 'Kullanıcılar']] : [])];
-  const go = k => { setTasks([]); setTab(k); };
+  const go = k => setTab(k);
 
   return (
     <>
@@ -218,13 +263,10 @@ export default function App() {
 }
 
 /* ---------- Ekranlar ---------- */
-function Mine({ c }) {
-  const { me, tasks, setTasks, ver } = c; const today = todayStr();
-  useEffect(() => { (async () => {
-    const { data } = await supabase.from('tasks').select('*').eq('assignee', me.id)
-      .or(`status.eq.open,due_date.gte.${addDays(today, -1)}`).lte('due_date', addDays(today, 7));
-    setTasks(data || []);
-  })(); }, [me.id, today, ver, setTasks]);
+function Mine({ c: base }) {
+  const { me } = base; const today = todayStr();
+  const [tasks, c] = useTaskScreen(base, () => fetchAll(() => supabase.from('tasks').select('*').eq('assignee', me.id)
+    .or(`status.eq.open,due_date.gte.${addDays(today, -1)}`).lte('due_date', addDays(today, 7))), [me.id, today]);
   const now = new Date(); const open = tasks.filter(t => t.status === 'open' && t.due_at);
   const late = open.filter(t => new Date(t.due_at) < now).length;
   const soon = open.filter(t => new Date(t.due_at) >= now && new Date(t.due_at) < new Date(now.getTime() + 2 * 3600e3)).length;
@@ -236,18 +278,14 @@ function Mine({ c }) {
   </>);
 }
 
-function ShiftView({ c }) {
-  const { tasks, setTasks, ver } = c; const today = todayStr();
+function ShiftView({ c: base }) {
+  const today = todayStr();
   const [date, setDate] = useState(today); const [shift, setShift] = useState('');
-  useEffect(() => { (async () => {
-    let q = supabase.from('tasks').select('*').eq('due_date', date); if (shift) q = q.eq('shift', shift);
-    const { data } = await q; let all = data || [];
-    if (date === today) {
-      let q2 = supabase.from('tasks').select('*').eq('status', 'open').lt('due_date', today); if (shift) q2 = q2.eq('shift', shift);
-      const r = await q2; all = [...all, ...(r.data || [])];
-    }
-    setTasks(all);
-  })(); }, [date, shift, ver, today, setTasks]);
+  const [tasks, c] = useTaskScreen(base, async () => {
+    const q1 = fetchAll(() => { let q = supabase.from('tasks').select('*').eq('due_date', date); if (shift) q = q.eq('shift', shift); return q; });
+    const q2 = date === today ? fetchAll(() => { let q = supabase.from('tasks').select('*').eq('status', 'open').lt('due_date', today); if (shift) q = q.eq('shift', shift); return q; }) : Promise.resolve([]);
+    const [a, b] = await Promise.all([q1, q2]); return [...a, ...b];
+  }, [date, shift, today]);
   const day = tasks.filter(t => t.due_date === date);
   const late = tasks.filter(t => t.due_date < date && t.status === 'open');
   return (<>
@@ -265,12 +303,8 @@ function ShiftView({ c }) {
   </>);
 }
 
-function Unassigned({ c }) {
-  const { tasks, setTasks, ver } = c;
-  useEffect(() => { (async () => {
-    const { data } = await supabase.from('tasks').select('*').is('assignee', null).eq('status', 'open').order('due_at');
-    setTasks(data || []);
-  })(); }, [ver, setTasks]);
+function Unassigned({ c: base }) {
+  const [tasks, c] = useTaskScreen(base, async () => (await fetchAll(() => supabase.from('tasks').select('*').is('assignee', null).eq('status', 'open'))).sort(byDue), []);
   return (<>
     <h2>Atanmamış görevler</h2>
     <p className="meta">Sağdaki "Ata…" listesinden kişiyi seçtiğiniz anda görev o kişiye atanır.</p>
@@ -282,10 +316,11 @@ function Unassigned({ c }) {
 function Report({ c }) {
   const today = todayStr(); const thisMon = monday(today); const lastMon = addDays(thisMon, -7);
   const [rows, setRows] = useState([]);
-  useEffect(() => { (async () => {
-    const { data } = await supabase.from('tasks').select('assignee,status,due_date').gte('due_date', lastMon).lte('due_date', addDays(thisMon, 6));
-    setRows(data || []);
-  })(); }, [lastMon, thisMon]);
+  useEffect(() => {
+    let live = true;
+    fetchAll(() => supabase.from('tasks').select('assignee,status,due_date').gte('due_date', lastMon).lte('due_date', addDays(thisMon, 6))).then(d => { if (live) setRows(d); });
+    return () => { live = false; };
+  }, [lastMon, thisMon, c.ver]);
   const stat = (id, from) => {
     const l = rows.filter(t => t.assignee === id && t.due_date >= from && t.due_date <= addDays(from, 6));
     return { n: l.length, can: l.filter(t => t.status === 'cancelled').length, done: l.filter(t => t.status === 'done').length, late: l.filter(t => t.status === 'open' && t.due_date < today).length };
@@ -515,10 +550,18 @@ function PresetForm({ initial, c, onSaved, onCancel }) {
 function Users({ c }) {
   const blank = { full_name: '', username: '', pin: '', role: 'receptionist', notify_email: '' };
   const [f, setF] = useState(blank); const [msg, setMsg] = useState(''); const [ed, setEd] = useState(null);
+  const [contacts, setContacts] = useState({});
+  const loadContacts = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const r = await fetch('/api/users', { headers: { Authorization: `Bearer ${session.access_token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) setContacts(Object.fromEntries((j.contacts || []).map(x => [x.id, x])));
+  }, []);
+  useEffect(() => { loadContacts(); }, [loadContacts]);
   const call = async (method, body) => {
     const { data: { session } } = await supabase.auth.getSession();
     const r = await fetch('/api/users', { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify(body) });
-    const j = await r.json().catch(() => ({})); return r.ok ? null : (j.error || 'İşlem başarısız.');
+    const j = await r.json().catch(() => ({})); if (r.ok) loadContacts(); return r.ok ? null : (j.error || 'İşlem başarısız.');
   };
   const add = async e => { e.preventDefault(); setMsg('');
     const err = await call('POST', f); if (err) setMsg(err); else { setMsg('Kullanıcı eklendi.'); setF(blank); c.reloadPeople(); } };
@@ -547,7 +590,7 @@ function Users({ c }) {
     <table><thead><tr><th>İsim</th><th>Kullanıcı adı</th><th>Rol</th><th>Durum</th><th /></tr></thead>
       <tbody>{c.people.map(p => (
         <tr key={p.id}><td>{p.full_name || '—'}</td><td>{p.username || <span className="meta">tanımsız</span>}</td><td>{ROLES[p.role]}</td><td>{p.active ? 'Aktif' : 'Pasif'}</td>
-          <td className="n"><button className="btn ghost sm" onClick={() => setEd({ ...p, pin: '' })}>Düzenle</button></td></tr>))}</tbody></table>
+          <td className="n"><button className="btn ghost sm" onClick={() => setEd({ ...p, notify_email: contacts[p.id]?.notify_email || '', pin: '' })}>Düzenle</button></td></tr>))}</tbody></table>
     <h3>Yeni kullanıcı ekle</h3>
     <form className="card" onSubmit={add}>
       <div className="grid">
