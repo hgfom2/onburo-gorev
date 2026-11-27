@@ -1,10 +1,10 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { todayStr, addDays, monday, SHIFT_END, dateOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor } from '../lib/util';
+import { todayStr, opDayStr, addDays, monday, SHIFT_END, NIGHT_END, dateOf, shiftDateOf, timeOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor } from '../lib/util';
 import { TASK_SELECT, itemsOf, ItemsList, ItemsEditor, CashInfo, CashForm } from './checklist';
 
-const SHIFTS = { A: 'A Vardiyası (08:00-16:00)', B: 'B Vardiyası (16:00-00:00)', C: 'C Vardiyası (00:00-08:00)' };
+const SHIFTS = { A: 'A Vardiyası (08:00-16:00)', B: 'B Vardiyası (16:00-00:00)', C: 'C Vardiyası (gece: ertesi gün 00:01-08:00)' };
 const SHIFT_NAME = k => SHIFTS[k].split(' (')[0];
 const ROLES = { admin: 'Yönetici', supervisor: 'Süpervizör', receptionist: 'Resepsiyonist' };
 const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
@@ -323,7 +323,7 @@ function Mine({ c: base }) {
 }
 
 function ShiftView({ c: base }) {
-  const today = todayStr();
+  const today = opDayStr(); // 08:00'e kadar hâlâ dünün gece (C) vardiyası sürer
   const [date, setDate] = useState(today); const [shift, setShift] = useState('');
   const [tasks, c] = useTaskScreen(base, async () => {
     const q1 = fetchAll(() => { let q = supabase.from('tasks').select(TASK_SELECT).eq('due_date', date); if (shift) q = q.eq('shift', shift); return q; });
@@ -334,6 +334,7 @@ function ShiftView({ c: base }) {
   const late = tasks.filter(t => t.due_date < date && t.status === 'open');
   return (<>
     <h2>Vardiya / Günlük görevler</h2>
+    {date === today && todayStr() !== today && <p className="meta">Gece vardiyası sürüyor: {fmtD(today)} tarihli C vardiyası görevleri bu günün altında listelenir.</p>}
     <div className="bar">
       <input type="date" value={date} onChange={e => setDate(e.target.value)} />
       <select value={shift} onChange={e => setShift(e.target.value)}>
@@ -363,12 +364,12 @@ function Report({ c }) {
   const [rows, setRows] = useState([]);
   useEffect(() => {
     let live = true;
-    fetchAll(() => supabase.from('tasks').select('assignee,status,due_date').gte('due_date', lastMon).lte('due_date', addDays(thisMon, 6))).then(d => { if (live) setRows(d); });
+    fetchAll(() => supabase.from('tasks').select('assignee,status,due_date,due_at').gte('due_date', lastMon).lte('due_date', addDays(thisMon, 6))).then(d => { if (live) setRows(d); });
     return () => { live = false; };
   }, [lastMon, thisMon, c.ver]);
   const stat = (id, from) => {
     const l = rows.filter(t => t.assignee === id && t.due_date >= from && t.due_date <= addDays(from, 6));
-    return { n: l.length, can: l.filter(t => t.status === 'cancelled').length, done: l.filter(t => t.status === 'done').length, late: l.filter(t => t.status === 'open' && t.due_date < today).length };
+    return { n: l.length, can: l.filter(t => t.status === 'cancelled').length, done: l.filter(t => t.status === 'done').length, late: l.filter(t => t.status === 'open' && (t.due_at ? new Date(t.due_at) < new Date() : t.due_date < today)).length };
   };
   const Tbl = ({ from, title }) => (<>
     <h3>{title} ({fmtD(from)} – {fmtD(addDays(from, 6))})</h3>
@@ -412,7 +413,7 @@ function Manage({ c }) {
     {tpls.map(t => (
       <div className="task" key={t.id} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
         <div style={{ flex: 1 }}><div className="t">{t.title}{t.kind === 'cash_handover' && <span className="kindtag">Kasa devri</span>}</div>
-          <div className="meta">{SHIFT_NAME(t.shift)} · {repeatText(t)} · Son saat: {(t.due_time || SHIFT_END[t.shift]).slice(0, 5)} · {c.names[t.assignee] || 'Atanmamış'}</div></div>
+          <div className="meta">{SHIFT_NAME(t.shift)} · {repeatText(t)} · Son saat: {(t.due_time || SHIFT_END[t.shift]).slice(0, 5)}{t.shift === 'C' ? ' (ertesi gün)' : ''} ·{c.names[t.assignee] || 'Atanmamış'}</div></div>
         <div className="acts">
           <button className="btn ghost sm" onClick={() => c.edit({ kind: 'tpl', data: t })}>Düzenle</button>
           <button className="btn ghost sm" onClick={() => stop(t.id)}>Durdur</button>
@@ -461,6 +462,8 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
     const wd = f.repeat === 'weekly' ? f.weekdays : [1, 2, 3, 4, 5, 6, 7];
     if (f.repeat === 'weekly' && !wd.length) { setMsg('En az bir gün seçin.'); return; }
     if (multi && !f.shifts.length) { setMsg('En az bir vardiya seçin.'); return; }
+    const NIGHT_MSG = 'C vardiyası ertesi gün 00:01-08:00 arasındadır; son saat 08:00\'i geçemez.';
+    if (recurring && f.due_time && shiftList.includes('C') && f.due_time > NIGHT_END) { setMsg(NIGHT_MSG); return; }
     const cleanFor = s => (recurring && f.kind === 'normal' ? items.filter(x => x.label.trim()).map((x, n) => ({ label: x.label.trim(), assignee: x.by?.[s] || null, sort: n })) : []);
     const whoFor = s => (multi ? f.by[s] : f.assignee) || null;
     if (mgrOnly && shiftList.some(s => isRec(whoFor(s)) || cleanFor(s).some(x => isRec(x.assignee)))) { setMsg('Yönetim kategorisindeki görevler resepsiyonistlere atanamaz.'); return; }
@@ -491,7 +494,8 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
       let due_at;
       if (f.dmode === 'exact') { if (!f.due_local) { setMsg('Tarih ve saat girin.'); return; } due_at = `${f.due_local}:00+03:00`; }
       else { const n = Number(f.rel_n); if (!(n > 0)) { setMsg('Süre 0\'dan büyük olmalı.'); return; } due_at = new Date(Date.now() + n * (f.rel_unit === 'saat' ? 3600e3 : 86400e3)).toISOString(); }
-      const row = { ...base, due_at, due_date: dateOf(due_at) };
+      if (f.shift === 'C' && timeOf(due_at) > NIGHT_END) { setMsg(NIGHT_MSG); return; }
+      const row = { ...base, due_at, due_date: shiftDateOf(f.shift, due_at) };
       ({ error } = isNew ? await supabase.from('tasks').insert(row) : await supabase.from('tasks').update(row).eq('id', i.id));
     }
     if (error) setMsg('Kaydedilemedi: ' + error.message); else onSaved();
