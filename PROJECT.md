@@ -109,7 +109,7 @@ Task card: checkbox, assign, edit, notes, cancel (reason required), reopen, chec
 
 ## 8. Business rules
 
-- **Shifts:** A 08:00–16:00, B 16:00–00:00 (default deadline 23:59), C 00:00–08:00. Default deadline is the shift end unless the definition sets `due_time`.
+- **Shifts:** A 08:00–16:00, B 16:00–00:00 (default deadline 23:59), C 00:01–08:00 **of the next calendar day**. The "27 Kasım gece vardiyası" runs 28 Kasım 00:01–08:00, so its tasks have `due_date` 27 and `due_at` 28 08:00 (`dueFor` in `lib/util.js`). The operational day runs 08:00 → next 08:00 (`opDayStr()`) and is the default date of "Vardiya / Gün". Default deadline is the shift end unless the definition sets `due_time`; for C it must be 08:00 or earlier.
 - **Recurring tasks:** one definition per shift (selecting several shifts creates several definitions, each with its own assignee and sub-item assignees). If the task occurs today, today's task is inserted immediately.
 - **One-off deadline:** an exact date and time, or a relative duration (hours / days from now).
 - **Late** means open and `due_at` is in the past.
@@ -155,7 +155,7 @@ Severity is my judgement from the code. Items marked *verify* depend on settings
 
 | # | Finding |
 |---|---|
-| 8 | **Shift C timing:** the cron runs at 07:00 local, so tasks for a date appear at 07:00 on that date, an hour before shift C (00:00–08:00) ends. There is also no catch-up if a run fails: a missed day means no recurring tasks (unless created by hand). Consider generating the next day's tasks in the evening, plus a backfill. |
+| 8 | **Shift C timing (fixed on branch `fix/gece-vardiyasi`, needs `migration_v7.sql`):** C tasks had their deadline on the shift's own date at 08:00, which is before the night shift actually starts. They now fall on the next morning. Still open: there is no catch-up if a cron run fails, so a missed day means no recurring tasks (unless created by hand). |
 | 9 | **Checklist tasks:** the parent task does not complete automatically when all items are ticked, and the card shows no progress (e.g. 3/5). |
 | 10 | **Staff report ignores sub-items:** it counts only `tasks.assignee`, so work assigned through checklist items does not appear in the weekly numbers. |
 | 11 | **Hard delete:** managers can permanently delete a task, which removes it from reports. No audit log or soft delete exists. |
@@ -174,7 +174,7 @@ Severity is my judgement from the code. Items marked *verify* depend on settings
 
 **Phase 0 — Harden (small, do first):** findings 1–5, plus the full env-var list in the README.
 
-**Phase 1 — Reliability:** cron timing and backfill (8), soft delete and audit log (3, 11), a single clean README, ordered migrations, unit tests for `lib/util.js`.
+**Phase 1 — Reliability:** cron catch-up after a failed run (8), soft delete and audit log (3, 11), a single clean README, ordered migrations, unit tests for `lib/util.js`.
 
 **Phase 2 — Product:** checklist progress and auto-complete (9), per-item numbers in the report and CSV/Excel export (10), receiver confirmation for cash handover (4), reminders beyond email (12), a UI for categories.
 
@@ -184,7 +184,6 @@ Severity is my judgement from the code. Items marked *verify* depend on settings
 
 1. Do you continue in this repo, or start a new repo and reuse the design?
 2. Which Supabase and Vercel projects are live, and are public sign-ups already disabled?
-3. Is shift C actually used? (It decides how urgent finding 8 is.)
-4. Who reads the weekly report, and does it need an Excel/PDF export?
-5. Should reminders go beyond email (push, WhatsApp, etc.)?
-6. Is Turkish-only fine, or is a second UI language needed?
+3. Who reads the weekly report, and does it need an Excel/PDF export?
+4. Should reminders go beyond email (push, WhatsApp, etc.)?
+5. Is Turkish-only fine, or is a second UI language needed?
