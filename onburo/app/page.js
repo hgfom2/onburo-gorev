@@ -429,28 +429,42 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
     shift: i.shift || 'A', assignee: i.assignee || '',
     dmode: i.dmode || 'exact', due_local: i.due_at ? toLocalInput(i.due_at) : `${todayStr()}T18:00`, rel_n: i.rel_n || 2, rel_unit: i.rel_unit || 'saat',
     repeat: isTpl ? i.recurrence : 'none', weekdays: i.weekdays || [1, 2, 3, 4, 5, 6, 7], due_time: (i.due_time || '').slice(0, 5),
-    kind: i.kind || 'normal'
+    kind: i.kind || 'normal',
+    shifts: [i.shift || 'A'], by: {} // yeni tekrarlayan görev: seçili vardiyalar ve her vardiyanın sorumlusu
   });
   const [msg, setMsg] = useState('');
-  const [items, setItems] = useState([]); // şablonun alt maddeleri
+  const [items, setItems] = useState([]); // şablonun alt maddeleri: { label, by: { vardiya: kişiId } }
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
   const recurring = isTpl || (isNew && f.repeat !== 'none');
+  const multi = isNew && recurring; // birden çok vardiya seçilebilir; her vardiya için ayrı şablon oluşur
+  const shiftList = multi ? f.shifts : [f.shift];
   const mgrOnly = !!c.catList.find(k => String(k.id) === String(f.category_id))?.mgr_only;
   const isRec = id => c.people.find(p => p.id === id)?.role === 'receptionist';
   useEffect(() => {
     if (!isTpl) return;
     supabase.from('template_items').select('label,assignee,sort').eq('template_id', i.id).order('sort')
-      .then(({ data }) => setItems((data || []).map(x => ({ label: x.label, assignee: x.assignee || '' }))));
-  }, [isTpl, i.id]);
+      .then(({ data }) => setItems((data || []).map(x => ({ label: x.label, by: { [i.shift]: x.assignee || '' } }))));
+  }, [isTpl, i.id, i.shift]);
+  const toggleShift = s => setF(x => {
+    const on = x.shifts.includes(s);
+    return { ...x, shifts: Object.keys(SHIFTS).filter(k => (k === s ? !on : x.shifts.includes(k))) };
+  });
+  const changeShift = s => { // tekil vardiya seçimi (şablon düzenleme / tek seferlik): kişiler yeni vardiyaya taşınır
+    setItems(its => its.map(it => ({ ...it, by: { ...it.by, [s]: it.by?.[f.shift] || '' } })));
+    set('shift', s);
+  };
 
   const save = async e => {
     e.preventDefault(); setMsg('');
-    const base = { title: f.title.trim(), description: f.description || null, category_id: f.category_id || null, shift: f.shift, assignee: f.assignee || null, kind: f.kind };
+    const mk = (s, who) => ({ title: f.title.trim(), description: f.description || null, category_id: f.category_id || null, shift: s, assignee: who || null, kind: f.kind });
+    const base = mk(f.shift, f.assignee);
     const wd = f.repeat === 'weekly' ? f.weekdays : [1, 2, 3, 4, 5, 6, 7];
     if (f.repeat === 'weekly' && !wd.length) { setMsg('En az bir gün seçin.'); return; }
-    const clean = recurring && f.kind === 'normal' ? items.filter(x => x.label.trim()).map((x, n) => ({ label: x.label.trim(), assignee: x.assignee || null, sort: n })) : [];
-    if (mgrOnly && (isRec(f.assignee) || clean.some(x => isRec(x.assignee)))) { setMsg('Yönetim kategorisindeki görevler resepsiyonistlere atanamaz.'); return; }
-    const syncItems = async tid => {
+    if (multi && !f.shifts.length) { setMsg('En az bir vardiya seçin.'); return; }
+    const cleanFor = s => (recurring && f.kind === 'normal' ? items.filter(x => x.label.trim()).map((x, n) => ({ label: x.label.trim(), assignee: x.by?.[s] || null, sort: n })) : []);
+    const whoFor = s => (multi ? f.by[s] : f.assignee) || null;
+    if (mgrOnly && shiftList.some(s => isRec(whoFor(s)) || cleanFor(s).some(x => isRec(x.assignee)))) { setMsg('Yönetim kategorisindeki görevler resepsiyonistlere atanamaz.'); return; }
+    const syncItems = async (tid, clean) => {
       const d = await supabase.from('template_items').delete().eq('template_id', tid);
       if (d.error || !clean.length) return d.error;
       return (await supabase.from('template_items').insert(clean.map(x => ({ ...x, template_id: tid })))).error;
@@ -458,12 +472,21 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
     let error;
     if (isTpl) {
       ({ error } = await supabase.from('templates').update({ ...base, recurrence: f.repeat, weekdays: wd, due_time: f.due_time || null }).eq('id', i.id));
-      if (!error) error = await syncItems(i.id);
+      if (!error) error = await syncItems(i.id, cleanFor(f.shift));
     } else if (recurring) {
-      const { data, error: e1 } = await supabase.from('templates').insert({ ...base, recurrence: f.repeat, weekdays: wd, due_time: f.due_time || null }).select().single();
-      error = e1; const today = todayStr();
-      if (!e1) error = await syncItems(data.id); // önce maddeler: bugünün görevi eklenince tetikleyici bunları kopyalar
-      if (!error && occursOn(data, today)) error = (await supabase.from('tasks').insert({ ...base, due_date: today, due_at: dueFor(data, today), template_id: data.id })).error;
+      const done = []; const today = todayStr();
+      for (const s of f.shifts) { // her vardiya için ayrı tekrarlayan görev
+        const row = mk(s, whoFor(s));
+        const { data, error: e1 } = await supabase.from('templates').insert({ ...row, recurrence: f.repeat, weekdays: wd, due_time: f.due_time || null }).select().single();
+        error = e1;
+        if (!error) error = await syncItems(data.id, cleanFor(s)); // önce maddeler: bugünün görevi eklenince tetikleyici bunları kopyalar
+        if (!error && occursOn(data, today)) error = (await supabase.from('tasks').insert({ ...row, due_date: today, due_at: dueFor(data, today), template_id: data.id })).error;
+        if (error) {
+          if (done.length) { setMsg(`${done.join(', ')} vardiyası eklendi, ${s} eklenemedi: ${error.message}. Aynı vardiyayı tekrar eklememek için "Aktif tekrarlayan görevler" listesini kontrol edin.`); c.bump(); return; }
+          break;
+        }
+        done.push(s);
+      }
     } else {
       let due_at;
       if (f.dmode === 'exact') { if (!f.due_local) { setMsg('Tarih ve saat girin.'); return; } due_at = `${f.due_local}:00+03:00`; }
@@ -489,17 +512,23 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
       <div style={{ marginBottom: 12 }}><label>Açıklama</label><textarea value={f.description} onChange={e => set('description', e.target.value)} /></div>
       <div className="grid">
         <div><label>Kategori</label><select value={f.category_id} onChange={e => set('category_id', e.target.value)}>{c.catList.map(k => <option key={k.id} value={k.id}>{k.name}{k.mgr_only ? ' (yalnızca yönetim)' : ''}</option>)}</select></div>
-        <div><label>Vardiya</label><select value={f.shift} onChange={e => set('shift', e.target.value)}>{Object.entries(SHIFTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
-        <div><label>Sorumlu</label><select value={f.assignee} onChange={e => set('assignee', e.target.value)}><option value="">Atanmamış</option>{c.people.filter(p => p.active && !(mgrOnly && p.role === 'receptionist')).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}</select></div>
+        {multi
+          ? <div><label>Vardiya (birden çok seçebilirsiniz)</label>
+              <div className="days">{Object.entries(SHIFTS).map(([k, v]) => <label key={k}><input type="checkbox" checked={f.shifts.includes(k)} onChange={() => toggleShift(k)} />{v}</label>)}</div></div>
+          : <div><label>Vardiya</label><select value={f.shift} onChange={e => (isTpl ? changeShift(e.target.value) : set('shift', e.target.value))}>{Object.entries(SHIFTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>}
+        {multi
+          ? f.shifts.map(s => <div key={s}><label>Sorumlu{f.shifts.length > 1 ? ` — ${SHIFTS[s]}` : ''}</label>
+              <select value={f.by[s] || ''} onChange={e => set('by', { ...f.by, [s]: e.target.value })}><option value="">Atanmamış</option>{c.people.filter(p => p.active && !(mgrOnly && p.role === 'receptionist')).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}</select></div>)
+          : <div><label>Sorumlu</label><select value={f.assignee} onChange={e => set('assignee', e.target.value)}><option value="">Atanmamış</option>{c.people.filter(p => p.active && !(mgrOnly && p.role === 'receptionist')).map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}</select></div>}
         {(isNew || isTpl) && <div><label>Tür</label><select value={f.kind} onChange={e => set('kind', e.target.value)}>{Object.entries(KINDS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>}
         {(isNew || isTpl) && <div><label>Tekrar</label><select value={f.repeat} onChange={e => set('repeat', e.target.value)}>{Object.entries(REPEATS).filter(([k]) => !(isTpl && k === 'none')).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>}
       </div>
       {f.repeat === 'weekly' && <div className="days" style={{ marginTop: 12 }}>{DAYS.map((d, n) => <label key={d}><input type="checkbox" checked={f.weekdays.includes(n + 1)} onChange={e => set('weekdays', e.target.checked ? [...f.weekdays, n + 1] : f.weekdays.filter(x => x !== n + 1))} />{d}</label>)}</div>}
       {f.kind === 'cash_handover' && <p className="meta" style={{ marginBottom: 0 }}>Kasa devri: tamamlarken kasayı devreden, kasayı alan ve kasa raporu fotoğrafı zorunludur.</p>}
-      {recurring && f.kind === 'normal' && <ItemsEditor items={items} setItems={setItems} people={c.people} mgrOnly={mgrOnly} />}
+      {recurring && f.kind === 'normal' && <ItemsEditor items={items} setItems={setItems} people={c.people} mgrOnly={mgrOnly} shifts={shiftList} />}
       <div className="sep" />
       {recurring ? (
-        <div><label>Son saat (boş bırakılırsa vardiya sonu: {SHIFT_END[f.shift]})</label><input type="time" value={f.due_time} onChange={e => set('due_time', e.target.value)} /></div>
+        <div><label>Son saat (boş bırakılırsa vardiya sonu{shiftList.length === 1 ? `: ${SHIFT_END[shiftList[0]]}` : 'nda; her vardiya kendi bitişinde'})</label><input type="time" value={f.due_time} onChange={e => set('due_time', e.target.value)} /></div>
       ) : (<>
         <label>Deadline</label>
         <div className="radios">

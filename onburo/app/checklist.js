@@ -43,23 +43,34 @@ export function ItemsList({ t, c }) {
 }
 
 /* ---------- Şablon formunda alt madde düzenleyici ---------- */
-export function ItemsEditor({ items, setItems, people, mgrOnly }) {
+// Her madde: { label, by: { A: kişiId, B: kişiId, ... } } — sorumlu seçili her vardiya için ayrı seçilir
+export function ItemsEditor({ items, setItems, people, mgrOnly, shifts }) {
   const upd = (k, f) => setItems(items.map((x, n) => (n === k ? { ...x, ...f } : x)));
+  const setBy = (k, s, v) => upd(k, { by: { ...(items[k].by || {}), [s]: v } });
   const staff = people.filter(p => p.active && !(mgrOnly && p.role === 'receptionist'));
   return (
     <div style={{ marginTop: 12 }}>
-      <label>Alt maddeler (isteğe bağlı) — her biri ayrı kişiye atanabilir</label>
+      <label>Alt maddeler (isteğe bağlı){shifts.length > 1 ? ' — sorumlu her vardiya için ayrı seçilir' : ' — her biri ayrı kişiye atanabilir'}</label>
       {items.map((it, k) => (
-        <div className="inline" key={k} style={{ marginBottom: 6 }}>
-          <input style={{ flex: 1 }} placeholder="örn. Casino grubu" value={it.label} onChange={e => upd(k, { label: e.target.value })} />
-          <select value={it.assignee || ''} onChange={e => upd(k, { assignee: e.target.value })}>
-            <option value="">Atanmamış</option>
-            {staff.map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}
-          </select>
-          <button type="button" className="btn ghost sm" aria-label="Maddeyi sil" onClick={() => setItems(items.filter((_, n) => n !== k))}>×</button>
+        <div key={k} style={{ marginBottom: 10 }}>
+          <div className="inline" style={{ marginBottom: 4 }}>
+            <input style={{ flex: 1 }} placeholder="örn. Casino grubu" value={it.label} onChange={e => upd(k, { label: e.target.value })} />
+            <button type="button" className="btn ghost sm" aria-label="Maddeyi sil" onClick={() => setItems(items.filter((_, n) => n !== k))}>×</button>
+          </div>
+          <div className="inline">
+            {shifts.map(s => (
+              <span key={s} className="inline">
+                {shifts.length > 1 && <span className="meta">{s}</span>}
+                <select value={it.by?.[s] || ''} onChange={e => setBy(k, s, e.target.value)} aria-label={`${s} vardiyası sorumlusu`}>
+                  <option value="">Atanmamış</option>
+                  {staff.map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}
+                </select>
+              </span>
+            ))}
+          </div>
         </div>
       ))}
-      <button type="button" className="btn ghost sm" onClick={() => setItems([...items, { label: '', assignee: '' }])}>+ Madde ekle</button>
+      <button type="button" className="btn ghost sm" onClick={() => setItems([...items, { label: '', by: {} }])}>+ Madde ekle</button>
     </div>
   );
 }
