@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { todayStr, opDayStr, addDays, monday, SHIFT_END, NIGHT_END, dateOf, shiftDateOf, timeOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor } from '../lib/util';
+import { GroupsScreen } from './groups';
 import { TASK_SELECT, itemsOf, ItemsList, ItemsEditor, CashInfo, CashForm } from './checklist';
 
 const SHIFTS = { A: 'A Vardiyası (08:00-16:00)', B: 'B Vardiyası (16:00-00:00)', C: 'C Vardiyası (gece: ertesi gün 00:01-08:00)' };
@@ -9,7 +10,7 @@ const SHIFT_NAME = k => SHIFTS[k].split(' (')[0];
 const ROLES = { admin: 'Yönetici', supervisor: 'Süpervizör', receptionist: 'Resepsiyonist' };
 const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
 const REPEATS = { none: 'Tek seferlik', daily: 'Her gün', weekly: 'Haftanın belirli günleri', monthly_first: 'Her ayın ilk günü', monthly_last: 'Her ayın son günü' };
-const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir İlişkileri': '#e0a800', 'Checklist': '#2e7d32', 'Yönetim': '#6a1b9a' };
+const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir İlişkileri': '#e0a800', 'Checklist': '#2e7d32', 'Yönetim': '#6a1b9a', 'Grup': '#00838f' };
 const KINDS = { normal: 'Normal görev', cash_handover: 'Kasa devri' };
 const isChecklist = (c, t) => c.catList.find(k => k.id === t.category_id)?.name === 'Checklist';
 const catColor = (catList, id) => CAT_COLORS[catList.find(c => c.id === id)?.name] || '#6b7280';
@@ -99,7 +100,7 @@ function Task({ t, c, who }) {
   const late = t.status === 'open' && t.due_at && new Date(t.due_at) < new Date();
   const mine = t.assignee === c.me.id; const n = c.noteCounts[t.id] || 0;
   const cash = t.kind === 'cash_handover'; const hasItems = itemsOf(t).length > 0;
-  const fresh = !t.template_id && t.status === 'open';
+  const fresh = !t.template_id && !t.group_id && t.status === 'open';
   const onCheck = () => (cash && t.status !== 'done' ? c.edit({ kind: 'cash', data: t }) : c.toggle(t, c.patch));
   return (
     <div className={`task ${t.status === 'done' ? 'done' : ''} ${cancelled ? 'cancelled' : ''} ${late ? 'late' : ''} ${fresh ? 'fresh' : ''}`} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
@@ -144,10 +145,17 @@ function ByCategory({ list, c, who }) {
   ));
 }
 
+/* Bir grubun görevleri (Gruplar sekmesi) */
+function GroupTasks({ g, base }) {
+  const [tasks, c] = useTaskScreen(base, () => fetchAll(() => supabase.from('tasks').select(TASK_SELECT).eq('group_id', g.id).order('due_at')), [g.id]);
+  if (!tasks.length) return <p className="empty">Bu grup için görev yok.</p>;
+  return [...tasks].sort(byDue).map(t => <Task key={t.id} t={t} c={c} who />);
+}
+
 /* Sıra: şablondan üretilmeyen (yeni) görevler en üstte, Checklist kategorisi en altta */
 function Sections({ list, c, who }) {
-  const fresh = list.filter(t => !t.template_id);
-  const rest = list.filter(t => t.template_id);
+  const fresh = list.filter(t => !t.template_id && !t.group_id);
+  const rest = list.filter(t => t.template_id || t.group_id);
   const other = rest.filter(t => !isChecklist(c, t));
   const chk = rest.filter(t => isChecklist(c, t));
   return (<>
@@ -216,6 +224,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'task_notes' }, kick)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'task_items' }, kick)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cash_handovers' }, kick)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'beo_groups' }, kick)
       .subscribe();
     const onVis = () => { if (document.visibilityState === 'visible') kick(); };
     document.addEventListener('visibilitychange', onVis);
@@ -251,7 +260,7 @@ export default function App() {
       <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>
   );
 
-  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'],
+  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'], ['groups', 'Gruplar'],
     ...(isMgr ? [['un', `Atanmamış${unCount ? ` (${unCount})` : ''}`], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : []),
     ...(isAdmin ? [['users', 'Kullanıcılar']] : [])];
   const go = k => setTab(k);
@@ -266,6 +275,7 @@ export default function App() {
       <main>
         {tab === 'mine' && <Mine c={c} />}
         {tab === 'shift' && <ShiftView c={c} />}
+        {tab === 'groups' && <GroupsScreen c={c} Tasks={GroupTasks} />}
         {tab === 'un' && isMgr && <Unassigned c={c} />}
         {tab === 'report' && isMgr && <Report c={c} />}
         {tab === 'manage' && isMgr && <Manage c={c} />}
