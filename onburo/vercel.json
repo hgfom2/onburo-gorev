@@ -1,1 +1,10 @@
-{ "crons": [{ "path": "/api/cron", "schedule": "0 4 * * *" }] }
+{
+  "schedules": {
+    "gunluk-gorevler": {
+      "schedule": "0 7 * * *",
+      "timezone": "Europe/Istanbul",
+      "path": "/api/cron",
+      "requestMethod": "GET"
+    }
+  }
+}

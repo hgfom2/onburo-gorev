@@ -133,7 +133,7 @@ Only `PIN_PEPPER` and the service-role key are mentioned in the current README.
 
 **New install:** create a Supabase project → run `supabase/schema.sql` → add the first user under Authentication → promote it with `update profiles set role='admin' …` → set the env vars in Vercel (Root Directory `onburo`) → deploy → log in with the email fallback and give yourself a username and PIN.
 
-**Cron:** `0 4 * * *` UTC, which is 07:00 in Turkey. It generates today's tasks from active definitions and sends one email per user who has a reminder address.
+**Zamanlama (Vercel Schedules, `onburo/vercel.json`):** her gün 07:00 Europe/Istanbul, `GET /api/cron` (CRON_SECRET gerekir). It generates today's tasks from active definitions and sends one email per user who has a reminder address.
 
 ## 10. Review findings
 
