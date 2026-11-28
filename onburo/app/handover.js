@@ -5,7 +5,7 @@ import { TZ, fmtDT } from '../lib/util';
 
 const SHIFT = { A: 'A Vardiyası', B: 'B Vardiyası', C: 'C Vardiyası' };
 // Kıbrıs saatine göre şu anki vardiya: 08–16 A, 16–24 B, 00–08 C
-const nowShift = () => {
+export const nowShift = () => {
   const h = Number(new Date().toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', hour12: false }).slice(0, 2));
   return h >= 16 ? 'B' : h >= 8 ? 'A' : 'C';
 };

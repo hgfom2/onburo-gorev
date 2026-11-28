@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { todayStr, opDayStr, addDays, monday, SHIFT_END, NIGHT_END, dateOf, shiftDateOf, timeOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor, zonedIso } from '../lib/util';
 import { GroupsScreen } from './groups';
-import { HandoverScreen, HandoverBanner } from './handover';
+import { HandoverScreen, HandoverBanner, nowShift } from './handover';
 import { AuditScreen } from './audit';
 import { TASK_SELECT, itemsOf, ItemsList, ItemsEditor, CashInfo, CashForm } from './checklist';
 
@@ -12,7 +12,7 @@ const SHIFT_NAME = k => SHIFTS[k].split(' (')[0];
 const ROLES = { admin: 'Yönetici', supervisor: 'Süpervizör', receptionist: 'Resepsiyonist' };
 const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
 const REPEATS = { none: 'Tek seferlik', daily: 'Her gün', weekly: 'Haftanın belirli günleri', monthly_first: 'Her ayın ilk günü', monthly_last: 'Her ayın son günü' };
-const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir İlişkileri': '#e0a800', 'Checklist': '#2e7d32', 'Yönetim': '#6a1b9a', 'Grup': '#00838f' };
+const CAT_COLORS = { 'Operasyon': '#1f5bc4', 'İdari': '#c62828', 'Misafir&Takip': '#e0a800', 'Checklist': '#2e7d32', 'Yönetim': '#6a1b9a', 'Grup': '#00838f' };
 const KINDS = { normal: 'Normal görev', cash_handover: 'Kasa devri' };
 const isChecklist = (c, t) => c.catList.find(k => k.id === t.category_id)?.name === 'Checklist';
 const catColor = (catList, id) => CAT_COLORS[catList.find(c => c.id === id)?.name] || '#6b7280';
@@ -129,7 +129,7 @@ function Task({ t, c, who }) {
         )}
         {c.isMgr && <button className="btn ghost sm" onClick={() => c.edit({ kind: 'task', data: t })}>Düzenle</button>}
         <button className="btn ghost sm" onClick={() => c.edit({ kind: 'notes', data: t })}>Notlar{n ? ` (${n})` : ''}</button>
-        {(c.isMgr || mine) && t.status === 'open' && <button className="btn danger sm" onClick={() => c.edit({ kind: 'cancel', data: t })}>İptal</button>}
+        {(c.isMgr || mine || t.created_by === c.me.id) && t.status === 'open' && <button className="btn danger sm" onClick={() => c.edit({ kind: 'cancel', data: t })}>İptal</button>}
         {c.isMgr && cancelled && <button className="btn ghost sm" onClick={() => c.reopen(t)}>Yeniden aç</button>}
       </div>
     </div>
@@ -264,7 +264,7 @@ export default function App() {
       <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>
   );
 
-  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'], ['groups', 'Gruplar'], ['handover', 'Devir notları'],
+  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'], ['groups', 'Gruplar'], ['handover', 'Devir notları'], ...(!isMgr ? [['request', 'Talep / Takip']] : []),
     ...(isMgr ? [['un', `Atanmamış${unCount ? ` (${unCount})` : ''}`], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : []),
     ...(isAdmin ? [['users', 'Kullanıcılar'], ['audit', 'Denetim']] : [])];
   const go = k => setTab(k);
@@ -280,6 +280,7 @@ export default function App() {
         {tab === 'mine' && <Mine c={c} />}
         {tab === 'shift' && <ShiftView c={c} />}
         {tab === 'handover' && <HandoverScreen c={c} />}
+        {tab === 'request' && !isMgr && <Requests c={c} />}
         {tab === 'groups' && <GroupsScreen c={c} Tasks={GroupTasks} />}
         {tab === 'un' && isMgr && <Unassigned c={c} />}
         {tab === 'report' && isMgr && <Report c={c} />}
@@ -362,6 +363,46 @@ function ShiftView({ c: base }) {
     {late.length > 0 && <><h3 style={{ color: 'var(--late)' }}>Geciken açık görevler ({late.length})</h3><ShiftGroups list={late} c={c} who /></>}
     {!day.length && <div className="empty">Bu gün için görev yok.</div>}
     <ShiftGroups list={day} c={c} who />
+  </>);
+}
+
+/* Resepsiyonist: yönetime talep / misafir takibi görevi girer. Yalnızca "Misafir&Takip" kategorisi; vardiya ve gün otomatik */
+function Requests({ c: base }) {
+  const cat = base.catList.find(k => k.name === 'Misafir&Takip');
+  const managers = base.people.filter(p => p.active && (p.role === 'admin' || p.role === 'supervisor'));
+  const [title, setTitle] = useState(''); const [desc, setDesc] = useState(''); const [to, setTo] = useState('');
+  const [msg, setMsg] = useState(''); const [busy, setBusy] = useState(false);
+  const [tasks, c] = useTaskScreen(base, async () => {
+    const since = new Date(Date.now() - 7 * 24 * 3600e3).toISOString();
+    return (await fetchAll(() => supabase.from('tasks').select(TASK_SELECT).eq('created_by', base.me.id).eq('category_id', cat?.id ?? -1).gte('created_at', since))).sort(byDue);
+  }, [cat?.id]);
+  const send = async e => {
+    e.preventDefault(); setMsg('');
+    if (!title.trim()) { setMsg('Başlık yazın.'); return; }
+    if (!cat) { setMsg('Kategori bulunamadı. Sayfayı yenileyin.'); return; }
+    setBusy(true);
+    const shift = nowShift(); const day = opDayStr(); // başlangıç: şu an; son saat: vardiya sonu
+    const { error } = await supabase.from('tasks').insert({ title: title.trim(), description: desc.trim() || null, category_id: cat.id, shift, assignee: to || null, due_date: day, due_at: dueFor({ shift }, day) });
+    setBusy(false);
+    if (error) { setMsg('Gönderilemedi: ' + error.message); return; }
+    setTitle(''); setDesc(''); setTo(''); base.bump();
+  };
+  return (<>
+    <h2>Talep / Takip</h2>
+    <form className="card" onSubmit={send}>
+      <p className="meta" style={{ marginTop: 0 }}>Yönetimden bir şey istemek veya misafir talebini iletmek için görev girin. Kategori "Misafir&amp;Takip" olarak, tarih ve vardiya şu ana göre otomatik atanır.</p>
+      <label htmlFor="rq-t">Başlık</label><input id="rq-t" style={{ width: '100%' }} value={title} onChange={e => setTitle(e.target.value)} maxLength={200} required />
+      <label htmlFor="rq-d" style={{ marginTop: 12 }}>Açıklama (isteğe bağlı)</label><textarea id="rq-d" value={desc} onChange={e => setDesc(e.target.value)} />
+      <label htmlFor="rq-a" style={{ marginTop: 12 }}>Kime (isteğe bağlı)</label>
+      <select id="rq-a" value={to} onChange={e => setTo(e.target.value)}>
+        <option value="">Atanmamış (yönetim atar)</option>{managers.map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}
+      </select>
+      {msg && <div className="err">{msg}</div>}
+      <div style={{ marginTop: 14 }}><button className="btn" disabled={busy}>{busy ? 'Gönderiliyor…' : 'Görevi gönder'}</button></div>
+    </form>
+    <h3>Gönderdiğim talepler (son 7 gün)</h3>
+    {!tasks.length && <div className="empty">Henüz talep göndermediniz.</div>}
+    {tasks.map(t => <Task key={t.id} t={t} c={c} who />)}
   </>);
 }
 
