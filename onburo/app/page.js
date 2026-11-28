@@ -103,6 +103,7 @@ function Task({ t, c, who }) {
   const mine = t.assignee === c.me.id; const n = c.noteCounts[t.id] || 0;
   const cash = t.kind === 'cash_handover'; const hasItems = itemsOf(t).length > 0;
   const fresh = !t.template_id && !t.group_id && t.status === 'open';
+  const follow = c.catList.find(k => k.id === t.category_id)?.name === 'Misafir&Takip'; // takip: vardiyadan bağımsız, başlangıç–bitiş günleri arası
   const pending = hasItems && t.status !== 'done' && itemsOf(t).some(i => !i.done); // alt maddeler bitmeden ana görev tamamlanamaz
   const onCheck = () => (cash && t.status !== 'done' ? c.edit({ kind: 'cash', data: t }) : c.toggle(t, c.patch));
   return (
@@ -112,7 +113,8 @@ function Task({ t, c, who }) {
         <div className="t">{t.title}{cash && <span className="kindtag">Kasa devri</span>}</div>
         {t.description && <div className="meta">{t.description}</div>}
         <div className="meta">
-          {SHIFT_NAME(t.shift)}{who && (t.assignee || !hasItems) && ` · ${c.names[t.assignee] || 'Atanmamış'}`} · Son: {t.due_at ? fmtDT(t.due_at) : fmtD(t.due_date)}
+          {follow ? 'Takip' : SHIFT_NAME(t.shift)}{who && (t.assignee || !hasItems) && ` · ${c.names[t.assignee] || 'Atanmamış'}`}
+          {follow ? ` · ${fmtD(t.due_date)} – ${fmtD(t.due_at ? dateOf(t.due_at) : t.due_date)}` : ` · Son: ${t.due_at ? fmtDT(t.due_at) : fmtD(t.due_date)}`}
           {late && <span className="late-tag"> · Gecikti</span>}
           {cancelled && <span className="late-tag"> · İptal edildi</span>}
         </div>
@@ -312,6 +314,24 @@ export default function App() {
 }
 
 /* ---------- Ekranlar ---------- */
+/* Görevlerim üstünde: açık takip görevleri (tüm vardiyalar için) */
+function FollowBanner({ c }) {
+  const mt = c.catList.find(k => k.name === 'Misafir&Takip')?.id;
+  const [list, setList] = useState([]);
+  useEffect(() => {
+    if (!mt) return;
+    supabase.from('tasks').select('id,title,due_date,due_at').eq('category_id', mt).eq('status', 'open').order('due_at').limit(20).then(({ data }) => setList(data || []));
+  }, [mt, c.ver]);
+  if (!list.length) return null;
+  return (
+    <div className="handover">
+      <b>Açık takipler ({list.length})</b>
+      {list.slice(0, 5).map(t => <div key={t.id} className="hn">{t.title} <span className="meta">· {fmtD(t.due_date)} – {fmtD(t.due_at ? dateOf(t.due_at) : t.due_date)}</span></div>)}
+      {list.length > 5 && <div className="meta" style={{ marginTop: 6 }}>… ve {list.length - 5} takip daha ("Talep / Takip" sekmesinde)</div>}
+    </div>
+  );
+}
+
 function Mine({ c: base }) {
   const { me } = base; const today = todayStr();
   const [tasks, c] = useTaskScreen(base, async () => {
@@ -335,6 +355,7 @@ function Mine({ c: base }) {
   return (<>
     <h2>Görevlerim</h2>
     <HandoverBanner c={base} />
+    <FollowBanner c={base} />
     {(late > 0 || soon > 0) && <div className="alert">{late > 0 && <b>{late} görev gecikti</b>}{late > 0 && soon > 0 && ' · '}{soon > 0 && <span>{soon} görev 2 saat içinde bitiyor</span>}</div>}
     {!tasks.length && <div className="empty">Size atanmış görev yok.</div>}
     <Sections list={tasks} c={c} />
@@ -343,14 +364,20 @@ function Mine({ c: base }) {
 
 function ShiftView({ c: base }) {
   const today = opDayStr(); // 08:00'e kadar hâlâ dünün gece (C) vardiyası sürer
+  const mt = base.catList.find(k => k.name === 'Misafir&Takip')?.id;
   const [date, setDate] = useState(today); const [shift, setShift] = useState('');
   const [tasks, c] = useTaskScreen(base, async () => {
     const q1 = fetchAll(() => { let q = supabase.from('tasks').select(TASK_SELECT).eq('due_date', date); if (shift) q = q.eq('shift', shift); return q; });
     const q2 = date === today ? fetchAll(() => { let q = supabase.from('tasks').select(TASK_SELECT).eq('status', 'open').lt('due_date', today); if (shift) q = q.eq('shift', shift); return q; }) : Promise.resolve([]);
-    const [a, b] = await Promise.all([q1, q2]); return [...a, ...b];
-  }, [date, shift, today]);
-  const day = tasks.filter(t => t.due_date === date);
-  const late = tasks.filter(t => t.due_date < date && t.status === 'open');
+    // Takip görevleri vardiyadan bağımsızdır: başladığı günden itibaren açık oldukça her gün ve her vardiyada görünür
+    const q3 = mt ? fetchAll(() => supabase.from('tasks').select(TASK_SELECT).eq('category_id', mt).eq('status', 'open').lte('due_date', date)) : Promise.resolve([]);
+    const [a, b, f] = await Promise.all([q1, q2, q3]);
+    return [...new Map([...a, ...b, ...f].map(t => [t.id, t])).values()];
+  }, [date, shift, today, mt]);
+  const isFollowOpen = t => t.category_id === mt && t.status === 'open';
+  const follow = tasks.filter(isFollowOpen).sort(byDue);
+  const day = tasks.filter(t => t.due_date === date && !isFollowOpen(t));
+  const late = tasks.filter(t => t.due_date < date && t.status === 'open' && !isFollowOpen(t));
   return (<>
     <h2>Vardiya / Günlük görevler</h2>
     {date === today && todayStr() !== today && <p className="meta">Gece vardiyası sürüyor: {fmtD(today)} tarihli C vardiyası görevleri bu günün altında listelenir.</p>}
@@ -361,8 +388,9 @@ function ShiftView({ c: base }) {
       </select>
       <span className="meta">{day.filter(t => t.status === 'done').length} / {day.filter(t => t.status !== 'cancelled').length} tamamlandı{day.some(t => t.status === 'cancelled') && ` · ${day.filter(t => t.status === 'cancelled').length} iptal`}</span>
     </div>
+    {follow.length > 0 && <><h3>Açık takipler ({follow.length})</h3>{follow.map(t => <Task key={t.id} t={t} c={c} who />)}</>}
     {late.length > 0 && <><h3 style={{ color: 'var(--late)' }}>Geciken açık görevler ({late.length})</h3><ShiftGroups list={late} c={c} who /></>}
-    {!day.length && <div className="empty">Bu gün için görev yok.</div>}
+    {!day.length && !follow.length && <div className="empty">Bu gün için görev yok.</div>}
     <ShiftGroups list={day} c={c} who />
   </>);
 }
@@ -370,7 +398,7 @@ function ShiftView({ c: base }) {
 /* Resepsiyonist: yönetime talep / misafir takibi görevi girer. Yalnızca "Misafir&Takip" kategorisi; vardiya ve gün otomatik */
 function Requests({ c: base }) {
   const cat = base.catList.find(k => k.name === 'Misafir&Takip');
-  const [title, setTitle] = useState(''); const [desc, setDesc] = useState('');
+  const [title, setTitle] = useState(''); const [desc, setDesc] = useState(''); const [until, setUntil] = useState('');
   const [msg, setMsg] = useState(''); const [busy, setBusy] = useState(false);
   const [tasks, c] = useTaskScreen(base, async () => {
     const since = new Date(Date.now() - 7 * 24 * 3600e3).toISOString();
@@ -383,18 +411,23 @@ function Requests({ c: base }) {
     if (!title.trim()) { setMsg('Başlık yazın.'); return; }
     if (!cat) { setMsg('Kategori bulunamadı. Sayfayı yenileyin.'); return; }
     setBusy(true);
-    const shift = nowShift(); const day = opDayStr(); // başlangıç: şu an; son saat: vardiya sonu
-    const { error } = await supabase.from('tasks').insert({ title: title.trim(), description: desc.trim() || null, category_id: cat.id, shift, due_date: day, due_at: dueFor({ shift }, day) });
+    const shift = nowShift(); const day = opDayStr(); // başlangıç: bugün; bitiş: seçilen gün (boşsa bugün) 23:59. Vardiyadan bağımsız görünür
+    const end = until || day;
+    if (end < day) { setBusy(false); setMsg('Bitiş tarihi bugünden önce olamaz.'); return; }
+    const { error } = await supabase.from('tasks').insert({ title: title.trim(), description: desc.trim() || null, category_id: cat.id, shift, due_date: day, due_at: zonedIso(end, '23:59') });
     setBusy(false);
     if (error) { setMsg('Gönderilemedi: ' + error.message); return; }
-    setTitle(''); setDesc(''); base.bump();
+    setTitle(''); setDesc(''); setUntil(''); base.bump();
   };
   return (<>
     <h2>Talep / Takip</h2>
     <form className="card" onSubmit={send}>
-      <p className="meta" style={{ marginTop: 0 }}>Yönetimden bir şey istemek veya misafir talebini iletmek için görev girin. Kimseye atanmaz, herkes görür. Kategori "Misafir&amp;Takip", tarih ve vardiya şu ana göre otomatik atanır.</p>
+      <p className="meta" style={{ marginTop: 0 }}>Yönetimden bir şey istemek veya misafir talebini iletmek için görev girin. Kimseye atanmaz, herkes görür. Kategori "Misafir&amp;Takip", başlangıç bugün olarak otomatik atanır; vardiyadan bağımsızdır.</p>
       <label htmlFor="rq-t">Başlık</label><input id="rq-t" style={{ width: '100%' }} value={title} onChange={e => setTitle(e.target.value)} maxLength={200} required />
       <label htmlFor="rq-d" style={{ marginTop: 12 }}>Açıklama (isteğe bağlı)</label><textarea id="rq-d" value={desc} onChange={e => setDesc(e.target.value)} />
+      <label htmlFor="rq-u" style={{ marginTop: 12 }}>Takip bitiş tarihi (isteğe bağlı)</label>
+      <input id="rq-u" type="date" min={opDayStr()} value={until} onChange={e => setUntil(e.target.value)} />
+      <p className="meta" style={{ marginBottom: 0 }}>Bitiş gününe kadar (boşsa yalnızca bugün) her gün, her vardiyada görünür. Tamamlanınca kapanır.</p>
       {msg && <div className="err">{msg}</div>}
       <div style={{ marginTop: 14 }}><button className="btn" disabled={busy}>{busy ? 'Gönderiliyor…' : 'Görevi gönder'}</button></div>
     </form>
