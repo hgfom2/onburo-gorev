@@ -16,7 +16,13 @@ export function ItemsList({ t, c }) {
   const tick = async i => {
     const done = !i.done;
     const { error } = await supabase.from('task_items').update({ done }).eq('id', i.id);
-    if (!error) c.patch(t.id, { task_items: t.task_items.map(x => (x.id === i.id ? { ...x, done } : x)) });
+    if (error) return;
+    const next = t.task_items.map(x => (x.id === i.id ? { ...x, done } : x));
+    // Veritabanı tetikleyicisiyle aynı kural: tüm maddeler bitince görev tamamlanır, madde geri alınınca yeniden açılır
+    const f = { task_items: next };
+    if (t.kind === 'normal' && t.status === 'open' && next.every(x => x.done)) { f.status = 'done'; f.completed_at = new Date().toISOString(); }
+    if (t.kind === 'normal' && t.status === 'done' && !done) { f.status = 'open'; f.completed_at = null; }
+    c.patch(t.id, f);
   };
   const reassign = async (i, uid) => {
     const { error } = await supabase.from('task_items').update({ assignee: uid || null }).eq('id', i.id);
@@ -27,7 +33,7 @@ export function ItemsList({ t, c }) {
       {items.map(i => (
         <div key={i.id} className={`item ${i.done ? 'done' : ''} ${i.assignee === c.me.id ? 'mine' : ''}`}>
           <label>
-            <input type="checkbox" checked={i.done} disabled={!(c.isMgr || i.assignee === c.me.id)} onChange={() => tick(i)} />
+            <input type="checkbox" checked={i.done} disabled={t.status === 'cancelled'} onChange={() => tick(i)} />
             {i.label}
           </label>
           {c.isMgr
