@@ -60,7 +60,7 @@ export function GroupsScreen({ c, Tasks }) {
         <div className="card" key={g.id}>
           <div className="inline" style={{ justifyContent: 'space-between', flexWrap: 'wrap' }}>
             <div>
-              <b>{g.name}</b> {g.beo_no && <span className="meta">BEO {g.beo_no}</span>} <span className="kindtag">{st}</span>
+              <b>{g.name}</b> <span className="kindtag">{st}</span>
               <div className="meta">{fmtD(g.arrival)} giriş → {fmtD(g.departure)} çıkış</div>
             </div>
             <div className="acts">
@@ -89,7 +89,7 @@ function Details({ g }) {
     [(g.sector || g.company) && 'Sektör / firma', [g.sector, g.company].filter(Boolean).join(' · ')],
     [(g.agency || g.agency_contact_name || g.agency_contact) && 'Acente', [g.agency, g.agency_contact_name, g.agency_contact].filter(Boolean).join(' · ')],
     ['Toplantı', g.has_meeting ? 'Var' : 'Yok'],
-    [(g.meal_payer || g.meal_notes) && 'Yemek', [g.meal_payer && MEAL[g.meal_payer], g.meal_notes].filter(Boolean).join(' · ')],
+    [g.meal_payer && 'Yemek', MEAL[g.meal_payer]],
     [g.events && 'Etkinlikler', g.events],
   ].filter(([k]) => k);
   return (
@@ -119,7 +119,7 @@ function WristNote({ g, onSaved, setMsg }) {
 
 function GroupForm({ initial, onDone, onCancel }) {
   const edit = !!initial.id;
-  const [f, setF] = useState({ name: initial.name || '', beo_no: initial.beo_no || '', rooms: initial.rooms ?? '', pax: initial.pax ?? '', sector: initial.sector || '', company: initial.company || '', agency: initial.agency || '', agency_contact_name: initial.agency_contact_name || '', agency_contact: initial.agency_contact || '', has_meeting: !!initial.has_meeting, meal_payer: initial.meal_payer || '', meal_notes: initial.meal_notes || '', events: initial.events || '', arrival: initial.arrival || '', departure: initial.departure || '', wristband: initial.wristband || '', note: initial.note || '' });
+  const [f, setF] = useState({ name: initial.name || '', rooms: initial.rooms ?? '', pax: initial.pax ?? '', sector: initial.sector || '', company: initial.company || '', agency: initial.agency || '', agency_contact_name: initial.agency_contact_name || '', agency_contact: initial.agency_contact || '', has_meeting: !!initial.has_meeting, meal_payer: initial.meal_payer || '', events: initial.events || '', arrival: initial.arrival || '', departure: initial.departure || '', wristband: initial.wristband || '', note: initial.note || '' });
   const [msg, setMsg] = useState(''); const [busy, setBusy] = useState(false);
   const set = k => e => setF({ ...f, [k]: e.target.value });
   const save = async e => {
@@ -132,8 +132,8 @@ function GroupForm({ initial, onDone, onCancel }) {
     setBusy(true);
     const t = v => v.trim() || null;
     const row = { rooms: num(f.rooms), pax: num(f.pax), sector: t(f.sector), company: t(f.company), agency: t(f.agency), agency_contact_name: t(f.agency_contact_name), agency_contact: t(f.agency_contact),
-      has_meeting: f.has_meeting, meal_payer: f.meal_payer || null, meal_notes: t(f.meal_notes), events: t(f.events),
-      name: f.name.trim(), beo_no: f.beo_no.trim() || null, arrival: f.arrival, departure: f.departure, wristband: f.wristband.trim() || null, note: f.note.trim() || null };
+      has_meeting: f.has_meeting, meal_payer: f.meal_payer || null, events: t(f.events),
+      name: f.name.trim(), arrival: f.arrival, departure: f.departure, wristband: f.wristband.trim() || null, note: f.note.trim() || null };
     const r = edit ? await supabase.from('beo_groups').update(row).eq('id', initial.id).select('id').single()
                    : await supabase.from('beo_groups').insert(row).select('id').single();
     setBusy(false);
@@ -145,7 +145,6 @@ function GroupForm({ initial, onDone, onCancel }) {
       <h3 style={{ marginTop: 0 }}>{edit ? 'Grubu düzenle' : 'Yeni grup'}</h3>
       <div className="grid">
         <div><label>Grup adı</label><input value={f.name} onChange={set('name')} required /></div>
-        <div><label>BEO no</label><input value={f.beo_no} onChange={set('beo_no')} /></div>
         <div><label>İlk misafir giriş günü</label><input type="date" value={f.arrival} onChange={set('arrival')} required /></div>
         <div><label>Son misafir çıkış günü</label><input type="date" value={f.departure} onChange={set('departure')} required /></div>
         <div><label>Oda sayısı</label><input type="number" min="0" value={f.rooms} onChange={set('rooms')} /></div>
@@ -159,7 +158,6 @@ function GroupForm({ initial, onDone, onCancel }) {
           <select value={f.has_meeting ? '1' : ''} onChange={e => setF({ ...f, has_meeting: e.target.value === '1' })}><option value="">Yok</option><option value="1">Var</option></select></div>
         <div><label>Ekstra yemekler</label>
           <select value={f.meal_payer} onChange={set('meal_payer')}><option value="">Belirtilmedi</option><option value="agency">Acente karşılar</option><option value="guest">Misafir öder</option></select></div>
-        <div><label>Yemek notları</label><input value={f.meal_notes} onChange={set('meal_notes')} /></div>
         <div><label>Etkinlikler (Gala, konser, bar gecesi…)</label><input value={f.events} onChange={set('events')} /></div>
         <div><label>Bileklik rengi</label><input value={f.wristband} onChange={set('wristband')} /></div>
         <div><label>Notlar</label><input value={f.note} onChange={set('note')} /></div>

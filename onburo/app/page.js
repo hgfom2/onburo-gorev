@@ -101,10 +101,11 @@ function Task({ t, c, who }) {
   const mine = t.assignee === c.me.id; const n = c.noteCounts[t.id] || 0;
   const cash = t.kind === 'cash_handover'; const hasItems = itemsOf(t).length > 0;
   const fresh = !t.template_id && !t.group_id && t.status === 'open';
+  const pending = hasItems && t.status !== 'done' && itemsOf(t).some(i => !i.done); // alt maddeler bitmeden ana görev tamamlanamaz
   const onCheck = () => (cash && t.status !== 'done' ? c.edit({ kind: 'cash', data: t }) : c.toggle(t, c.patch));
   return (
     <div className={`task ${t.status === 'done' ? 'done' : ''} ${cancelled ? 'cancelled' : ''} ${late ? 'late' : ''} ${fresh ? 'fresh' : ''}`} style={{ borderLeftColor: catColor(c.catList, t.category_id) }}>
-      <input type="checkbox" checked={t.status === 'done'} disabled={cancelled} onChange={onCheck} aria-label="Tamamlandı" />
+      <input type="checkbox" checked={t.status === 'done'} disabled={cancelled || pending} title={pending ? 'Önce tüm alt maddeleri tamamlayın' : undefined} onChange={onCheck} aria-label="Tamamlandı" />
       <div style={{ flex: 1 }}>
         <div className="t">{t.title}{cash && <span className="kindtag">Kasa devri</span>}</div>
         {t.description && <div className="meta">{t.description}</div>}
