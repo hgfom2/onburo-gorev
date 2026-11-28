@@ -56,7 +56,7 @@ onburo-gorev/
 - **Next.js server routes exist only for what needs the service-role key:** PIN login, user administration, the daily cron.
 - **Login:** username becomes `<username>@onburo.local`; the password is `PIN + PIN_PEPPER`. `/api/login` signs in on the server and returns tokens; the client calls `setSession`. An email/password fallback ("first admin") is shown on the login page.
 - **Live updates:** the client subscribes to `tasks`, `task_notes`, `task_items`, `cash_handovers`. Any change triggers a debounced (800 ms) reload of the current screens. It also reloads when the tab becomes visible and polls every 5 minutes as a fallback.
-- **Time zone:** `Europe/Istanbul`, with deadlines written as `+03:00`.
+- **Time zone:** `Europe/Nicosia`, with deadlines written as `+03:00`.
 
 ## 5. Data model
 
@@ -133,7 +133,7 @@ Only `PIN_PEPPER` and the service-role key are mentioned in the current README.
 
 **New install:** create a Supabase project → run `supabase/schema.sql` → add the first user under Authentication → promote it with `update profiles set role='admin' …` → set the env vars in Vercel (Root Directory `onburo`) → deploy → log in with the email fallback and give yourself a username and PIN.
 
-**Zamanlama (Vercel Schedules, `onburo/vercel.json`):** her gün 07:00 Europe/Istanbul, `GET /api/cron` (CRON_SECRET gerekir). It generates today's tasks from active definitions and sends one email per user who has a reminder address.
+**Zamanlama (Vercel Schedules, `onburo/vercel.json`):** her gün 07:00 Europe/Nicosia, `GET /api/cron` (CRON_SECRET gerekir). It generates today's tasks from active definitions and sends one email per user who has a reminder address.
 
 ## 10. Review findings
 

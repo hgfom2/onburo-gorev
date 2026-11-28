@@ -356,7 +356,7 @@ insert into group_rules(title, when_type, sort) values
 create function group_wanted(gid uuid) returns table(rule_id uuid, title text, shift text, assignee uuid, dt date)
 language sql stable security definer set search_path = public as $$
   with g as (select * from beo_groups where id = gid and status = 'active'),
-       td as (select (now() at time zone 'Europe/Istanbul')::date as today)
+       td as (select (now() at time zone 'Europe/Nicosia')::date as today)
   select r.id, r.title, r.shift, r.assignee, (g.arrival + r.offset_days) from group_rules r, g where r.active and r.when_type = 'arrival'
   union all
   select r.id, r.title, r.shift, r.assignee, (g.departure + r.offset_days) from group_rules r, g where r.active and r.when_type = 'departure'
@@ -371,7 +371,7 @@ revoke execute on function group_wanted(uuid) from public, anon, authenticated;
 -- Görevleri üret / güncelle (güvenle tekrar çalıştırılabilir; tamamlanan ve geçmiş görevlere dokunmaz)
 create function generate_group_tasks(gid uuid) returns int
 language plpgsql security definer set search_path = public as $$
-declare g beo_groups; cat int; n int; today date := (now() at time zone 'Europe/Istanbul')::date;
+declare g beo_groups; cat int; n int; today date := (now() at time zone 'Europe/Nicosia')::date;
 begin
   if my_role() is null or my_role() not in ('admin','supervisor') then raise exception 'Yetkisiz.'; end if;
   select * into g from beo_groups where id = gid;
@@ -397,7 +397,7 @@ begin
 
   insert into tasks(title, category_id, shift, assignee, due_date, due_at, group_id, rule_id)
     select g.name || ': ' || w.title, cat, w.shift, w.assignee, w.dt,
-           ((case when w.shift = 'C' then w.dt + 1 else w.dt end)::text || 'T' || case w.shift when 'A' then '16:00' when 'B' then '23:59' else '08:00' end || ':00+03:00')::timestamptz, -- C: ertesi sabah 08:00
+           ((case when w.shift = 'C' then w.dt + 1 else w.dt end)::timestamp + (case w.shift when 'A' then time '16:00' when 'B' then time '23:59' else time '08:00' end)) at time zone 'Europe/Nicosia', -- C: ertesi sabah 08:00
            gid, w.rule_id
     from group_wanted(gid) w
     on conflict (group_id, rule_id, due_date) where group_id is not null and rule_id is not null do nothing;

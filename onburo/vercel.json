@@ -2,7 +2,7 @@
   "schedules": {
     "gunluk-gorevler": {
       "schedule": "0 7 * * *",
-      "timezone": "Europe/Istanbul",
+      "timezone": "Europe/Nicosia",
       "path": "/api/cron",
       "requestMethod": "GET"
     }
