@@ -29,6 +29,7 @@ export async function GET(req) {
   for (let k = 3; k >= 1; k--) { const d = addDays(today, -k); if (!haveDays.has(d)) catchUp.push(d); }
   const rows = [...catchUp, ...days].flatMap(d => (tpls || []).filter(t => occursOn(t, d)).map(t => mk(t, d)));
   if (rows.length) await db.from('tasks').upsert(rows, { onConflict: 'template_id,due_date', ignoreDuplicates: true });
+  await db.from('audit_log').delete().lt('at', new Date(Date.now() - 365 * 24 * 3600e3).toISOString()); // denetim kayıtları bir yıl saklanır
   await db.from('login_attempts').delete().lt('at', new Date(Date.now() - 24 * 3600e3).toISOString()); // eski giriş denemelerini temizle
 
   // 2) E-posta hatırlatma (yalnızca "bildirim e-postası" girilmiş kullanıcılara)
