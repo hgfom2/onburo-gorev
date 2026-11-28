@@ -3,6 +3,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { todayStr, opDayStr, addDays, monday, SHIFT_END, NIGHT_END, dateOf, shiftDateOf, timeOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor, zonedIso } from '../lib/util';
 import { GroupsScreen } from './groups';
+import { HandoverScreen, HandoverBanner } from './handover';
+import { AuditScreen } from './audit';
 import { TASK_SELECT, itemsOf, ItemsList, ItemsEditor, CashInfo, CashForm } from './checklist';
 
 const SHIFTS = { A: 'A Vardiyası (08:00-16:00)', B: 'B Vardiyası (16:00-00:00)', C: 'C Vardiyası (gece: ertesi gün 00:01-08:00)' };
@@ -226,6 +228,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'task_items' }, kick)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cash_handovers' }, kick)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'beo_groups' }, kick)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'handover_notes' }, kick)
       .subscribe();
     const onVis = () => { if (document.visibilityState === 'visible') kick(); };
     document.addEventListener('visibilitychange', onVis);
@@ -261,9 +264,9 @@ export default function App() {
       <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>
   );
 
-  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'], ['groups', 'Gruplar'],
+  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'], ['groups', 'Gruplar'], ['handover', 'Devir notları'],
     ...(isMgr ? [['un', `Atanmamış${unCount ? ` (${unCount})` : ''}`], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : []),
-    ...(isAdmin ? [['users', 'Kullanıcılar']] : [])];
+    ...(isAdmin ? [['users', 'Kullanıcılar'], ['audit', 'Denetim']] : [])];
   const go = k => setTab(k);
 
   return (
@@ -276,11 +279,13 @@ export default function App() {
       <main>
         {tab === 'mine' && <Mine c={c} />}
         {tab === 'shift' && <ShiftView c={c} />}
+        {tab === 'handover' && <HandoverScreen c={c} />}
         {tab === 'groups' && <GroupsScreen c={c} Tasks={GroupTasks} />}
         {tab === 'un' && isMgr && <Unassigned c={c} />}
         {tab === 'report' && isMgr && <Report c={c} />}
         {tab === 'manage' && isMgr && <Manage c={c} />}
         {tab === 'users' && isAdmin && <Users c={c} />}
+        {tab === 'audit' && isAdmin && <AuditScreen c={c} />}
       </main>
       {editing && (
         <div className="modal" onClick={() => setEditing(null)}>
@@ -327,6 +332,7 @@ function Mine({ c: base }) {
   const soon = open.filter(t => new Date(t.due_at) >= now && new Date(t.due_at) < new Date(now.getTime() + 2 * 3600e3)).length;
   return (<>
     <h2>Görevlerim</h2>
+    <HandoverBanner c={base} />
     {(late > 0 || soon > 0) && <div className="alert">{late > 0 && <b>{late} görev gecikti</b>}{late > 0 && soon > 0 && ' · '}{soon > 0 && <span>{soon} görev 2 saat içinde bitiyor</span>}</div>}
     {!tasks.length && <div className="empty">Size atanmış görev yok.</div>}
     <Sections list={tasks} c={c} />
