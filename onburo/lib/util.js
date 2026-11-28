@@ -1,4 +1,4 @@
-export const TZ = 'Europe/Istanbul';
+export const TZ = 'Europe/Nicosia'; // otel saati: Kıbrıs (kışın UTC+2, yazın UTC+3)
 export const SHIFT_END = { A: '16:00', B: '23:59', C: '08:00' };
 
 export const todayStr = () => new Date().toLocaleDateString('sv-SE', { timeZone: TZ });
@@ -30,9 +30,22 @@ export function occursOn(t, date) {
   if (t.recurrence === 'monthly_last') return addDays(date, 1).slice(8) === '01';
   return false;
 }
-// Şablondan üretilen görevin son teslim zamanı (Türkiye saati, UTC+3)
+// Kıbrıs duvar saatini ("2026-11-28" + "16:00") gerçek zaman anına (ISO, UTC) çevirir; yaz/kış saatini hesaba katar
+const tzOffsetMs = ms => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    .formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ms / 1000) * 1000;
+};
+export function zonedIso(date, time) {
+  const [y, mo, d] = date.split('-').map(Number); const [h, mi] = time.split(':').map(Number);
+  const wall = Date.UTC(y, mo - 1, d, h, mi);
+  let ms = wall - tzOffsetMs(wall);
+  ms = wall - tzOffsetMs(ms);
+  return new Date(ms).toISOString();
+}
+// Şablondan üretilen görevin son teslim zamanı (Kıbrıs saati)
 export function dueFor(t, date) {
   const time = (t.due_time || SHIFT_END[t.shift]).slice(0, 5);
   const day = t.shift === 'C' ? addDays(date, 1) : date; // C vardiyası ertesi sabah biter
-  return `${day}T${time}:00+03:00`;
+  return zonedIso(day, time);
 }

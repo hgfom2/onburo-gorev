@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { todayStr, opDayStr, addDays, monday, SHIFT_END, NIGHT_END, dateOf, shiftDateOf, timeOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor } from '../lib/util';
+import { todayStr, opDayStr, addDays, monday, SHIFT_END, NIGHT_END, dateOf, shiftDateOf, timeOf, fmtD, fmtDT, toLocalInput, occursOn, dueFor, zonedIso } from '../lib/util';
 import { GroupsScreen } from './groups';
 import { TASK_SELECT, itemsOf, ItemsList, ItemsEditor, CashInfo, CashForm } from './checklist';
 
@@ -502,7 +502,7 @@ function TaskForm({ mode, initial, c, onSaved, onCancel, onPreset }) {
       }
     } else {
       let due_at;
-      if (f.dmode === 'exact') { if (!f.due_local) { setMsg('Tarih ve saat girin.'); return; } due_at = `${f.due_local}:00+03:00`; }
+      if (f.dmode === 'exact') { if (!f.due_local) { setMsg('Tarih ve saat girin.'); return; } due_at = zonedIso(f.due_local.slice(0, 10), f.due_local.slice(11, 16)); }
       else { const n = Number(f.rel_n); if (!(n > 0)) { setMsg('Süre 0\'dan büyük olmalı.'); return; } due_at = new Date(Date.now() + n * (f.rel_unit === 'saat' ? 3600e3 : 86400e3)).toISOString(); }
       if (f.shift === 'C' && timeOf(due_at) > NIGHT_END) { setMsg(NIGHT_MSG); return; }
       const row = { ...base, due_at, due_date: shiftDateOf(f.shift, due_at) };
