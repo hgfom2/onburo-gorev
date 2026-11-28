@@ -213,9 +213,10 @@ export default function App() {
   useEffect(() => {
     if (!isMgr) return;
     // Alt maddeleri olan checklist görevlerinin ana görevi atamasızdır; onlar "atanmamış" sayılmaz
-    supabase.from('tasks').select('id, task_items(id)').is('assignee', null).eq('status', 'open')
-      .then(({ data }) => setUnCount((data || []).filter(t => !(t.task_items || []).length).length));
-  }, [isMgr, ver]);
+    const mt = catList.find(k => k.name === 'Misafir&Takip')?.id;
+    supabase.from('tasks').select('id, category_id, task_items(id)').is('assignee', null).eq('status', 'open')
+      .then(({ data }) => setUnCount((data || []).filter(t => !(t.task_items || []).length && t.category_id !== mt).length));
+  }, [isMgr, ver, catList]);
 
   // Canlı yenileme: başkasının değişikliği (görev/not) gelince ekranlar yeniden yüklenir
   useEffect(() => {
@@ -264,7 +265,7 @@ export default function App() {
       <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Çıkış</button></main>
   );
 
-  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'], ['groups', 'Gruplar'], ['handover', 'Devir notları'], ...(!isMgr ? [['request', 'Talep / Takip']] : []),
+  const tabs = [['mine', 'Görevlerim'], ['shift', 'Vardiya / Gün'], ['groups', 'Gruplar'], ['handover', 'Devir notları'], ['request', 'Talep / Takip'],
     ...(isMgr ? [['un', `Atanmamış${unCount ? ` (${unCount})` : ''}`], ['report', 'Personel raporu'], ['manage', 'Görev ekle']] : []),
     ...(isAdmin ? [['users', 'Kullanıcılar'], ['audit', 'Denetim']] : [])];
   const go = k => setTab(k);
@@ -280,7 +281,7 @@ export default function App() {
         {tab === 'mine' && <Mine c={c} />}
         {tab === 'shift' && <ShiftView c={c} />}
         {tab === 'handover' && <HandoverScreen c={c} />}
-        {tab === 'request' && !isMgr && <Requests c={c} />}
+        {tab === 'request' && <Requests c={c} />}
         {tab === 'groups' && <GroupsScreen c={c} Tasks={GroupTasks} />}
         {tab === 'un' && isMgr && <Unassigned c={c} />}
         {tab === 'report' && isMgr && <Report c={c} />}
@@ -369,12 +370,13 @@ function ShiftView({ c: base }) {
 /* Resepsiyonist: yönetime talep / misafir takibi görevi girer. Yalnızca "Misafir&Takip" kategorisi; vardiya ve gün otomatik */
 function Requests({ c: base }) {
   const cat = base.catList.find(k => k.name === 'Misafir&Takip');
-  const managers = base.people.filter(p => p.active && (p.role === 'admin' || p.role === 'supervisor'));
-  const [title, setTitle] = useState(''); const [desc, setDesc] = useState(''); const [to, setTo] = useState('');
+  const [title, setTitle] = useState(''); const [desc, setDesc] = useState('');
   const [msg, setMsg] = useState(''); const [busy, setBusy] = useState(false);
   const [tasks, c] = useTaskScreen(base, async () => {
     const since = new Date(Date.now() - 7 * 24 * 3600e3).toISOString();
-    return (await fetchAll(() => supabase.from('tasks').select(TASK_SELECT).eq('created_by', base.me.id).eq('category_id', cat?.id ?? -1).gte('created_at', since))).sort(byDue);
+    const q = () => supabase.from('tasks').select(TASK_SELECT).eq('category_id', cat?.id ?? -1);
+    const [open, recent] = await Promise.all([fetchAll(() => q().eq('status', 'open')), fetchAll(() => q().neq('status', 'open').gte('created_at', since))]);
+    return [...open, ...recent].sort(byDue);
   }, [cat?.id]);
   const send = async e => {
     e.preventDefault(); setMsg('');
@@ -382,33 +384,30 @@ function Requests({ c: base }) {
     if (!cat) { setMsg('Kategori bulunamadı. Sayfayı yenileyin.'); return; }
     setBusy(true);
     const shift = nowShift(); const day = opDayStr(); // başlangıç: şu an; son saat: vardiya sonu
-    const { error } = await supabase.from('tasks').insert({ title: title.trim(), description: desc.trim() || null, category_id: cat.id, shift, assignee: to || null, due_date: day, due_at: dueFor({ shift }, day) });
+    const { error } = await supabase.from('tasks').insert({ title: title.trim(), description: desc.trim() || null, category_id: cat.id, shift, due_date: day, due_at: dueFor({ shift }, day) });
     setBusy(false);
     if (error) { setMsg('Gönderilemedi: ' + error.message); return; }
-    setTitle(''); setDesc(''); setTo(''); base.bump();
+    setTitle(''); setDesc(''); base.bump();
   };
   return (<>
     <h2>Talep / Takip</h2>
     <form className="card" onSubmit={send}>
-      <p className="meta" style={{ marginTop: 0 }}>Yönetimden bir şey istemek veya misafir talebini iletmek için görev girin. Kategori "Misafir&amp;Takip" olarak, tarih ve vardiya şu ana göre otomatik atanır.</p>
+      <p className="meta" style={{ marginTop: 0 }}>Yönetimden bir şey istemek veya misafir talebini iletmek için görev girin. Kimseye atanmaz, herkes görür. Kategori "Misafir&amp;Takip", tarih ve vardiya şu ana göre otomatik atanır.</p>
       <label htmlFor="rq-t">Başlık</label><input id="rq-t" style={{ width: '100%' }} value={title} onChange={e => setTitle(e.target.value)} maxLength={200} required />
       <label htmlFor="rq-d" style={{ marginTop: 12 }}>Açıklama (isteğe bağlı)</label><textarea id="rq-d" value={desc} onChange={e => setDesc(e.target.value)} />
-      <label htmlFor="rq-a" style={{ marginTop: 12 }}>Kime (isteğe bağlı)</label>
-      <select id="rq-a" value={to} onChange={e => setTo(e.target.value)}>
-        <option value="">Atanmamış (yönetim atar)</option>{managers.map(p => <option key={p.id} value={p.id}>{p.full_name || p.username}</option>)}
-      </select>
       {msg && <div className="err">{msg}</div>}
       <div style={{ marginTop: 14 }}><button className="btn" disabled={busy}>{busy ? 'Gönderiliyor…' : 'Görevi gönder'}</button></div>
     </form>
-    <h3>Gönderdiğim talepler (son 7 gün)</h3>
-    {!tasks.length && <div className="empty">Henüz talep göndermediniz.</div>}
+    <h3>Açık talepler ve son 7 günün kapananları</h3>
+    {!tasks.length && <div className="empty">Talep yok.</div>}
     {tasks.map(t => <Task key={t.id} t={t} c={c} who />)}
   </>);
 }
 
 function Unassigned({ c: base }) {
+  const mt = base.catList.find(k => k.name === 'Misafir&Takip')?.id; // talep/takip görevleri atanmaz, "atanmamış" sayılmaz
   const [tasks, c] = useTaskScreen(base, async () => (await fetchAll(() => supabase.from('tasks').select(TASK_SELECT).is('assignee', null).eq('status', 'open')))
-    .filter(t => !itemsOf(t).length).sort(byDue), []);
+    .filter(t => !itemsOf(t).length && t.category_id !== mt).sort(byDue), [mt]);
   return (<>
     <h2>Atanmamış görevler</h2>
     <p className="meta">Sağdaki "Ata…" listesinden kişiyi seçtiğiniz anda görev o kişiye atanır.</p>
