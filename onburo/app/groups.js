@@ -64,7 +64,7 @@ export function GroupsScreen({ c, Tasks }) {
               <div className="meta">{fmtD(g.arrival)} giriş → {fmtD(g.departure)} çıkış</div>
             </div>
             <div className="acts">
-              <button className="btn ghost sm" onClick={() => setOpenId(open ? null : g.id)}>{open ? 'Görevleri gizle' : 'Görevler'}</button>
+              {c.isMgr && <button className="btn ghost sm" onClick={() => setOpenId(open ? null : g.id)}>{open ? 'Görevleri gizle' : 'Görevler'}</button>}
               {c.isMgr && g.status === 'active' && <>
                 <button className="btn ghost sm" onClick={() => setForm(g)}>Düzenle</button>
                 <button className="btn ghost sm" onClick={() => regen(g.id)}>Görevleri yenile</button>
@@ -73,12 +73,30 @@ export function GroupsScreen({ c, Tasks }) {
               {c.isMgr && g.status === 'cancelled' && <button className="btn ghost sm" onClick={() => setStatus(g, 'active')}>Yeniden aç</button>}
             </div>
           </div>
+          <Details g={g} />
           <WristNote g={g} onSaved={() => c.bump()} setMsg={setMsg} />
-          {open && <div style={{ marginTop: 10 }}><Tasks g={g} base={c} /></div>}
+          {open && c.isMgr && <div style={{ marginTop: 10 }}><Tasks g={g} base={c} /></div>}
         </div>
       );
     })}
   </>);
+}
+
+const MEAL = { agency: 'Ekstra yemekleri acente karşılar', guest: 'Ekstra yemekleri misafir öder' };
+function Details({ g }) {
+  const rows = [
+    [(g.rooms != null || g.pax != null) && 'Oda / kişi', `${g.rooms ?? '—'} oda · ${g.pax ?? '—'} kişi`],
+    [(g.sector || g.company) && 'Sektör / firma', [g.sector, g.company].filter(Boolean).join(' · ')],
+    [(g.agency || g.agency_contact_name || g.agency_contact) && 'Acente', [g.agency, g.agency_contact_name, g.agency_contact].filter(Boolean).join(' · ')],
+    ['Toplantı', g.has_meeting ? 'Var' : 'Yok'],
+    [(g.meal_payer || g.meal_notes) && 'Yemek', [g.meal_payer && MEAL[g.meal_payer], g.meal_notes].filter(Boolean).join(' · ')],
+    [g.events && 'Etkinlikler', g.events],
+  ].filter(([k]) => k);
+  return (
+    <div className="meta" style={{ marginTop: 6, display: 'grid', gap: 2 }}>
+      {rows.map(([k, v]) => <div key={k}><b>{k}:</b> {v}</div>)}
+    </div>
+  );
 }
 
 /* Bileklik rengi ve not: resepsiyonistler de güncelleyebilir */
@@ -101,7 +119,7 @@ function WristNote({ g, onSaved, setMsg }) {
 
 function GroupForm({ initial, onDone, onCancel }) {
   const edit = !!initial.id;
-  const [f, setF] = useState({ name: initial.name || '', beo_no: initial.beo_no || '', arrival: initial.arrival || '', departure: initial.departure || '', wristband: initial.wristband || '', note: initial.note || '' });
+  const [f, setF] = useState({ name: initial.name || '', beo_no: initial.beo_no || '', rooms: initial.rooms ?? '', pax: initial.pax ?? '', sector: initial.sector || '', company: initial.company || '', agency: initial.agency || '', agency_contact_name: initial.agency_contact_name || '', agency_contact: initial.agency_contact || '', has_meeting: !!initial.has_meeting, meal_payer: initial.meal_payer || '', meal_notes: initial.meal_notes || '', events: initial.events || '', arrival: initial.arrival || '', departure: initial.departure || '', wristband: initial.wristband || '', note: initial.note || '' });
   const [msg, setMsg] = useState(''); const [busy, setBusy] = useState(false);
   const set = k => e => setF({ ...f, [k]: e.target.value });
   const save = async e => {
@@ -109,8 +127,13 @@ function GroupForm({ initial, onDone, onCancel }) {
     if (!f.name.trim()) { setMsg('Grup adı gerekli.'); return; }
     if (!f.arrival || !f.departure) { setMsg('Giriş ve çıkış tarihini girin.'); return; }
     if (f.departure < f.arrival) { setMsg('Çıkış tarihi girişten önce olamaz.'); return; }
+    const num = v => (v === '' ? null : Number(v));
+    if ([f.rooms, f.pax].some(v => v !== '' && !(Number(v) >= 0))) { setMsg('Oda ve kişi sayısı 0 veya daha büyük olmalı.'); return; }
     setBusy(true);
-    const row = { name: f.name.trim(), beo_no: f.beo_no.trim() || null, arrival: f.arrival, departure: f.departure, wristband: f.wristband.trim() || null, note: f.note.trim() || null };
+    const t = v => v.trim() || null;
+    const row = { rooms: num(f.rooms), pax: num(f.pax), sector: t(f.sector), company: t(f.company), agency: t(f.agency), agency_contact_name: t(f.agency_contact_name), agency_contact: t(f.agency_contact),
+      has_meeting: f.has_meeting, meal_payer: f.meal_payer || null, meal_notes: t(f.meal_notes), events: t(f.events),
+      name: f.name.trim(), beo_no: f.beo_no.trim() || null, arrival: f.arrival, departure: f.departure, wristband: f.wristband.trim() || null, note: f.note.trim() || null };
     const r = edit ? await supabase.from('beo_groups').update(row).eq('id', initial.id).select('id').single()
                    : await supabase.from('beo_groups').insert(row).select('id').single();
     setBusy(false);
@@ -125,8 +148,21 @@ function GroupForm({ initial, onDone, onCancel }) {
         <div><label>BEO no</label><input value={f.beo_no} onChange={set('beo_no')} /></div>
         <div><label>İlk misafir giriş günü</label><input type="date" value={f.arrival} onChange={set('arrival')} required /></div>
         <div><label>Son misafir çıkış günü</label><input type="date" value={f.departure} onChange={set('departure')} required /></div>
+        <div><label>Oda sayısı</label><input type="number" min="0" value={f.rooms} onChange={set('rooms')} /></div>
+        <div><label>Kişi sayısı</label><input type="number" min="0" value={f.pax} onChange={set('pax')} /></div>
+        <div><label>İlgili sektör</label><input value={f.sector} onChange={set('sector')} /></div>
+        <div><label>Firma adı</label><input value={f.company} onChange={set('company')} /></div>
+        <div><label>Acente</label><input value={f.agency} onChange={set('agency')} /></div>
+        <div><label>Acente yetkilisi</label><input value={f.agency_contact_name} onChange={set('agency_contact_name')} /></div>
+        <div><label>Acente iletişim (telefon / e-posta)</label><input value={f.agency_contact} onChange={set('agency_contact')} /></div>
+        <div><label>Toplantı</label>
+          <select value={f.has_meeting ? '1' : ''} onChange={e => setF({ ...f, has_meeting: e.target.value === '1' })}><option value="">Yok</option><option value="1">Var</option></select></div>
+        <div><label>Ekstra yemekler</label>
+          <select value={f.meal_payer} onChange={set('meal_payer')}><option value="">Belirtilmedi</option><option value="agency">Acente karşılar</option><option value="guest">Misafir öder</option></select></div>
+        <div><label>Yemek notları</label><input value={f.meal_notes} onChange={set('meal_notes')} /></div>
+        <div><label>Etkinlikler (Gala, konser, bar gecesi…)</label><input value={f.events} onChange={set('events')} /></div>
         <div><label>Bileklik rengi</label><input value={f.wristband} onChange={set('wristband')} /></div>
-        <div><label>Not</label><input value={f.note} onChange={set('note')} /></div>
+        <div><label>Notlar</label><input value={f.note} onChange={set('note')} /></div>
       </div>
       {edit && <p className="meta">Tarihler değişirse gerekmeyen açık görevler silinir, yenileri eklenir. Tamamlanan görevler korunur.</p>}
       {msg && <div className="err">{msg}</div>}
@@ -162,7 +198,7 @@ function RulesEditor({ c, groups, regen }) {
     for (const g of groups.filter(x => x.status === 'active' && x.departure >= todayStr())) { if ((await regen(g.id)) === null) return; }
     setMsg('Aktif gruplara uygulandı.');
   };
-  const staff = c.people.filter(p => p.active);
+  const staff = c.people.filter(p => p.active && p.role !== 'receptionist'); // grup görevleri yalnızca yönetime görünür
   return (
     <div className="card">
       <h3 style={{ marginTop: 0 }}>Grup görev kuralları</h3>
