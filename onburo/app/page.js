@@ -313,10 +313,10 @@ export default function App() {
 function Mine({ c: base }) {
   const { me } = base; const today = todayStr();
   const [tasks, c] = useTaskScreen(base, async () => {
-    const win = q => q.or(`status.eq.open,due_date.gte.${addDays(today, -1)}`).lte('due_date', addDays(today, 7));
+    const win = q => q.eq('status', 'open').lte('due_date', addDays(today, 7)); // yalnızca açık görevler: tamamlanan ve iptal edilenler listeden çıkar
     const own = await fetchAll(() => win(supabase.from('tasks').select(TASK_SELECT).eq('assignee', me.id)));
     // Ana görev bana atanmamış olsa bile, bana atanmış alt maddesi olan görevler de gelir
-    const { data: its } = await supabase.from('task_items').select('task_id, tasks!inner(due_date)').eq('assignee', me.id)
+    const { data: its } = await supabase.from('task_items').select('task_id, tasks!inner(due_date,status)').eq('assignee', me.id).eq('tasks.status', 'open')
       .gte('tasks.due_date', addDays(today, -60)).lte('tasks.due_date', addDays(today, 7));
     const have = new Set(own.map(t => t.id));
     const extra = [...new Set((its || []).map(r => r.task_id))].filter(id => !have.has(id));
